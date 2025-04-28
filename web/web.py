@@ -5,11 +5,17 @@ from database.database import get_db, get_current_height
 from wallet.wallet import  verify_transaction
 from pydantic import BaseModel
 from typing import Dict, List, Set, Optional
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from datetime import datetime
-import logger
+from gossip.gossip import TREASURY_ADDRESS, sha256d
+from blockchain.blockchain import serialize_transaction
+from state.state import pending_transactions
+import logging
 import json
 import base64
+import time
+import asyncio
+
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -97,69 +103,78 @@ def get_balance(wallet_address: str) -> Decimal:
             if utxo_data["receiver"] == wallet_address and not utxo_data["spent"]:
                 total += Decimal(utxo_data["amount"])
     return total
-
-def get_transactions(wallet_address: str, limit: int = 50) -> List[dict]:
-    """
-    Same semantics as before but handles decimal amounts safely.
-    Returned 'amount' is a string so the caller can feed it to Decimal().
-    """
+    
+def get_transactions(wallet_address: str, limit: int = 50):
     db = get_db()
     tx_list = []
+    transactions = {}
 
     for key, value in db.items():
-        if not key.startswith(b"tx:"):
+        if not key.startswith(b"utxo:"):
             continue
 
-        tx = json.loads(value.decode())
-        ts = tx.get("timestamp", 0)
+        utxo = json.loads(value.decode('utf-8'))
+        sender = utxo["sender"]
+        receiver = utxo["receiver"]
+        amount = Decimal(utxo["amount"])
+        txid = utxo["txid"]
 
-        # -------- Sent side -------------------------------------------------
-        sent_total = Decimal("0")
-        sent_to = set()
+        # Skip change transactions explicitly
+        if sender == wallet_address and receiver == wallet_address:
+            continue
 
-        for inp in tx.get("inputs", []):
-            if inp.get("sender") == wallet_address:
-                try:
-                    sent_total += Decimal(str(inp.get("amount", "0")))
-                except InvalidOperation:
-                    continue
-                sent_to.add(inp.get("receiver"))
+        # Initialize if needed
+        if txid not in transactions:
+            # Fetch the correct timestamp from corresponding tx entry
+            tx_key = f"tx:{txid}".encode()
+            tx_data_raw = db.get(tx_key)
 
-        if sent_total != 0:
+            if tx_data_raw:
+                tx_data = json.loads(tx_data_raw.decode('utf-8'))
+                timestamp = tx_data.get("timestamp", 0)
+            else:
+                timestamp = 0
+
+            transactions[txid] = {
+                "sent": Decimal("0"),
+                "received": Decimal("0"),
+                "sent_to": [],
+                "received_from": [],
+                "timestamp": timestamp
+            }
+
+        if sender == wallet_address and receiver != wallet_address:
+            transactions[txid]["sent"] += amount
+            transactions[txid]["sent_to"].append(receiver)
+
+        elif receiver == wallet_address and sender != wallet_address:
+            transactions[txid]["received"] += amount
+            transactions[txid]["received_from"].append(sender)
+
+    for txid, data in transactions.items():
+        if data["sent"] > 0:
+            sent_to_addr = next((addr for addr in data["sent_to"] if addr != wallet_address), "Unknown")
             tx_list.append({
-                "txid":        tx["txid"],
-                "direction":   "sent",
-                "amount":      str(-sent_total),           # keep sign, stringify
-                "counterpart": list(sent_to),
-                "timestamp":   ts
+                "txid": txid,
+                "direction": "sent",
+                "amount": f"-{data['sent']}",
+                "counterpart": sent_to_addr,
+                "timestamp": data["timestamp"]
             })
 
-        # -------- Received side ---------------------------------------------
-        recv_total = Decimal("0")
-        recv_from = set()
-
-        for out in tx.get("outputs", []):
-            if out.get("receiver") == wallet_address:
-                try:
-                    recv_total += Decimal(str(out.get("amount", "0")))
-                except InvalidOperation:
-                    continue
-                recv_from.add(out.get("sender"))
-
-        if recv_total != 0:
+        if data["received"] > 0:
+            received_from_addr = next((addr for addr in data["received_from"] if addr != wallet_address), "Unknown")
             tx_list.append({
-                "txid":        tx["txid"],
-                "direction":   "received",
-                "amount":      str(recv_total),
-                "counterpart": list(recv_from),
-                "timestamp":   ts
+                "txid": txid,
+                "direction": "received",
+                "amount": f"{data['received']}",
+                "counterpart": received_from_addr,
+                "timestamp": data["timestamp"]
             })
 
     tx_list.sort(key=lambda x: x["timestamp"], reverse=True)
-    return tx_list[:limit]
 
-    #target = 2 ** (256 - difficulty)
-    #bits = target_to_bits(target)  # Convert target to bits format
+    return tx_list[:limit]
 
 async def simulate_all_transactions():
     while True:
@@ -185,7 +200,7 @@ async def broadcast_to_websocket_clients(message: str):
         except WebSocketDisconnect:
             disconnected_clients.append(client)
         except Exception as e:
-            logger.error(f"Error broadcasting to client: {e}")
+            logging.error(f"Error broadcasting to client: {e}")
             disconnected_clients.append(client)
     
     # Remove disconnected clients
@@ -194,20 +209,19 @@ async def broadcast_to_websocket_clients(message: str):
 
 
 async def simulate_combined_updates(wallet_address: str):
-    """
-    Periodically push balance + recent transactions to every WebSocket client.
-    Compatible with the new get_transactions() that returns 'amount' as str.
-    """
     while True:
         balance = get_balance(wallet_address)
         transactions = get_transactions(wallet_address)
         formatted = []
+
         for tx in transactions:
             tx_type = "send" if tx["direction"] == "sent" else "receive"
-            # Parse string → Decimal, then abs() for magnitude display
+            
             amt_dec = Decimal(tx["amount"])
             amount_fmt = f"{abs(amt_dec):.8f} BQS"
-            address = ", ".join(tx["counterpart"]) if tx["counterpart"] else "n/a"
+
+            address = tx["counterpart"] if tx["counterpart"] else "n/a"
+
             formatted.append({
                 "id":        tx["txid"],
                 "type":      tx_type,
@@ -217,6 +231,7 @@ async def simulate_combined_updates(wallet_address: str):
                 "hash":      tx["txid"],
                 "status":    "confirmed"
             })
+
         await websocket_manager.broadcast(
             {
                 "type":         "combined_update",
@@ -294,8 +309,9 @@ async def health_check():
 
 @app.post("/worker")
 async def worker_endpoint(request: Request):
-    global gossip_client
     db = get_db()
+    gossip_client = request.app.state.gossip_client  
+
     payload = await request.json()
 
     if payload.get("request_type") == "broadcast_tx":
@@ -308,47 +324,48 @@ async def worker_endpoint(request: Request):
         parts = message_str.split(":")
         sender_, receiver_, send_amount = parts[0], parts[1], parts[2]
         nonce = parts[3] if len(parts) > 3 else str(int(time.time() * 1000))
+        
         if not verify_transaction(message_str, signature_hex, pubkey_hex):
             return {"status": "error", "message": "Invalid signature"}
+
         inputs = []
         total_available = Decimal("0")
         for key, value in db.items():
             if key.startswith(b"utxo:"):
                 utxo_data = json.loads(value.decode())
                 if utxo_data["receiver"] == sender_ and not utxo_data["spent"]:
-                    txid = utxo_data.get("txid")
-                    utxo_index = utxo_data.get("utxo_index")
-                    sender = utxo_data.get("sender")
-                    receiver = utxo_data.get("receiver")
                     amount_decimal = Decimal(str(utxo_data.get("amount")))
                     inputs.append({
-                        "txid": txid,
-                        "utxo_index": utxo_index,
-                        "sender": sender,
-                        "receiver": receiver,
-                        "amount":  str(amount_decimal),
+                        "txid": utxo_data.get("txid"),
+                        "utxo_index": utxo_data.get("utxo_index"),
+                        "sender": utxo_data.get("sender"),
+                        "receiver": utxo_data.get("receiver"),
+                        "amount": str(amount_decimal),
                         "spent": False
                     })
                     total_available += amount_decimal
+
         miner_fee = (Decimal(send_amount) * Decimal("0.001")).quantize(Decimal("0.00000001"))
         treasury_fee = (Decimal(send_amount) * Decimal("0.001")).quantize(Decimal("0.00000001"))
-        total_required = Decimal(send_amount) + Decimal(miner_fee) + Decimal(treasury_fee)
+        total_required = Decimal(send_amount) + miner_fee + treasury_fee
+        
         if total_available < total_required:
             return {
                 "status": "error",
                 "message": f"Insufficient funds: Need {total_required}, have {total_available}"
             }
-        print(f"sender: {sender_}")
-        print(f"receiver: {receiver_}")
+
         outputs = [
             {"utxo_index": 0, "sender": sender_, "receiver": receiver_, "amount": str(send_amount), "spent": False},
             {"utxo_index": 2, "sender": sender_, "receiver": TREASURY_ADDRESS, "amount": str(treasury_fee), "spent": False}
         ]
-        change = Decimal(total_available) - Decimal(total_required)
+
+        change = total_available - total_required
         if change > 0:
             outputs.insert(1, {
                 "utxo_index": 1, "sender": sender_, "receiver": sender_, "amount": str(change), "spent": False
             })
+
         transaction = {
             "type": "transaction",
             "inputs": inputs,
@@ -360,15 +377,19 @@ async def worker_endpoint(request: Request):
             },
             "timestamp": int(time.time() * 1000)
         }
+
         raw_tx = serialize_transaction(transaction)
         txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex() 
         transaction["txid"] = txid
         for output in transaction["outputs"]:
             output["txid"] = txid
         pending_transactions[txid] = transaction
-        print(f"[TX] Added {txid} to mempool. Total: {len(pending_transactions)}")
+
         await gossip_client.randomized_broadcast(transaction)
+
         return {"status": "success", "message": "Transaction broadcast successfully", "tx_id": txid}
+
+    return {"status": "error", "message": "Unsupported request type"}
 
 
     if payload.get("request_type") == "get_bridge_address":
@@ -386,29 +407,29 @@ async def worker_endpoint(request: Request):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    logger.info(f"WebSocket connection attempt from {websocket.client} with headers: {dict(websocket.headers)}")
+    logging.info(f"WebSocket connection attempt from {websocket.client} with headers: {dict(websocket.headers)}")
     try:
-        logger.info(f"WebSocket accepted: {websocket.client}")
+        logging.info(f"WebSocket accepted: {websocket.client}")
         await websocket_manager.connect(websocket)
         while True:
             try:
                 data = await websocket.receive_json()
-                logger.debug(f"Received: {data}")
+                logging.debug(f"Received: {data}")
                 update_type = data.get("update_type")
                 wallet_address = data.get("wallet_address")
                 if update_type:
                     websocket_manager.subscribe(websocket, update_type, wallet_address if update_type != "all_transactions" else None)
                     if update_type == "combined_update" and wallet_address:
                         task = asyncio.create_task(simulate_combined_updates(wallet_address))
-                        logger.debug(f"Started combined_updates task for {wallet_address}")
+                        logging.debug(f"Started combined_updates task for {wallet_address}")
                     elif update_type == "bridge" and wallet_address and data.get("bridge_address") and data.get("secret"):
                         asyncio.create_task(simulate_bridge_updates(wallet_address, data["bridge_address"], data["secret"]))
             except json.JSONDecodeError as e:
-                logger.warning(f"Invalid JSON received: {e}")
+                logging.warning(f"Invalid JSON received: {e}")
                 await websocket.send_json({"error": "Invalid JSON", "message": str(e)})
     except WebSocketDisconnect:
         await websocket_manager.disconnect(websocket)
-        logger.info(f"WebSocket disconnected: {websocket.client}")
+        logging.info(f"WebSocket disconnected: {websocket.client}")
     except Exception as e:
-        logger.error(f"WebSocket error: {str(e)}", exc_info=True)
+        logging.error(f"WebSocket error: {str(e)}", exc_info=True)
         await websocket.close(code=1008, reason=f"Server error: {str(e)}")

@@ -37,6 +37,10 @@ async def startup():
 
     await announce_gossip_port(wallet=validator_wallet, ip=ip_address, port=args.gossip_port)
 
+    # Save gossip_client into FastAPI apps
+    app.state.gossip_client = gossip_client
+    rpc_app.state.gossip_client = gossip_client
+
     # Background tasks
     tasks = [
         asyncio.create_task(update_heartbeat()),

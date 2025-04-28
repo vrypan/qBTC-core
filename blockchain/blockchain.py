@@ -2,6 +2,7 @@ import struct
 from gossip.gossip import sha256d
 import hashlib
 import base58
+import json
 # Blockchain state 
 TREASURY_ADDRESS = "bqs1GPSETB9KzXeYWHfs2zMGPv5VKhLTPSvhm"
 GENESIS_ADDRESS = "bqs1genesis00000000000000000000000000000000"

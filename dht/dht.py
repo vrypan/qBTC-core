@@ -29,7 +29,7 @@ async def run_kad_server(port, bootstrap_addr=None, wallet=None, gossip_node=Non
     logging.info(f"Validator {VALIDATOR_ID} running DHT on port {port}")
     await register_validator_once()
     if wallet and gossip_node:
-        ip_address = "127.0.0.1" if bootstrap_addr is None else await get_external_ip()
+        ip_address = "127.0.0.1" #if bootstrap_addr is None else await get_external_ip()
         await announce_gossip_port(wallet, ip=ip_address, port=DEFAULT_GOSSIP_PORT, gossip_node=gossip_node)
         #if bootstrap_addr:  # Only discover peers if not bootstrap
         #    await discover_peers_once(gossip_node)

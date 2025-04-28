@@ -98,9 +98,10 @@ class GossipNode:
 
 
         if msg_type == "transaction":
+            print(msg)
             if tx_id in self.seen_tx or tx_id in pending_transactions:
                 return
-            if not verify_transaction(msg["body"]["transaction_data"], msg["body"]["signature"], msg["body"]["pubkey"]):
+            if not verify_transaction(msg["body"]["msg_str"], msg["body"]["signature"], msg["body"]["pubkey"]):
                 return
             pending_transactions[tx_id] = msg
             await self.randomized_broadcast(msg)
