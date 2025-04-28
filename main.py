@@ -7,7 +7,7 @@ from web.web import app
 from rpc.rpc import rpc_app
 from node.startup import startup, shutdown
 
-logging.basicConfig(level=logging.ERROR, format="%(asctime)s - %(message)s")
+#logging.basicConfig(level=logging.ERROR, format="%(asctime)s - %(message)s")
 
 async def main():
     await startup()
@@ -16,7 +16,7 @@ async def main():
         app,
         host="0.0.0.0",
         port=8080,
-        log_level="debug",
+        log_level="error",
         ws="wsproto"
     )
     server_web = uvicorn.Server(config_web)
@@ -25,7 +25,7 @@ async def main():
         rpc_app,
         host="0.0.0.0",
         port=8332,
-        log_level="debug"
+        log_level="error"
     )
     server_rpc = uvicorn.Server(config_rpc)
 

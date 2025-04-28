@@ -168,8 +168,232 @@ async def push_blocks(peer_ip, peer_port):
             w.write((json.dumps(blocks_message) + "\n").encode('utf-8'))
             await w.drain()
             print(f"Sent {len(blocks_to_send)} blocks to {peer_ip}")
+        
+        elif peer_height > local_height:
+            print("***** WILL PULL BLOCKS FROM PEER *****")
+            start_height = local_height + 1
+            end_height = peer_height
+
+            get_blocks_request = {
+                "type": "get_blocks",
+                "start_height": start_height,
+                "end_height": end_height,
+                "timestamp": int(time.time() * 1000)
+            }
+            w.write((json.dumps(get_blocks_request) + "\n").encode('utf-8'))
+            await w.drain()
+
+            response = await r.readline()
+
+            blocks = sorted(response.get("blocks", []), key=lambda x: x["height"])
+            logging.info(f"Received {len(blocks)} blocks from {from_peer}")
+
+            db = get_db()
+
+            for block in blocks:
+                height = block.get("height")
+                print(height)
+                block_hash = block.get("block_hash")
+                print(block_hash)
+                prev_hash = block.get("previous_hash")
+                block_key = f"block:{block_hash}".encode()
+                if block_key in db:
+                    logging.info(f"Block {block_hash} already exists in DB. Skipping.")
+                    continue 
+                print(prev_hash)
+                tx_ids = block.get("tx_ids", [])
+                print(tx_ids)
+                nonce = block.get("nonce")
+                print(nonce)
+                timestamp = block.get("timestamp")
+                print(timestamp)
+                miner_address = block.get("miner_address")
+                print(miner_address)
+                full_transactions = block.get("full_transactions", [])
+                print(full_transactions)
+                block_merkle_root = block.get("merkle_root")
+
+                print(f"[SYNC] Processing block height {height} with hash {block_hash}")
+
+                for tx in full_transactions:
+
+                    if tx.get("tx_id") == "genesis_tx":
+                        print("[SYNC] Genesis transaction detected.")
+                        db.put(b"tx:genesis_tx", json.dumps(tx).encode())
+                        continue
+
+      
+                    if "version" in tx and "inputs" in tx and "outputs" in tx:
+                        print("[SYNC] Coinbase transaction detected.")
+                        coinbase_tx_id = "coinbase_" + str(height)
+                        print("coinbase_tx_id")
+                        print(coinbase_tx_id)
+                        db.put(f"tx:{coinbase_tx_id}".encode(), json.dumps(tx).encode())
+
+                        for idx, output in enumerate(tx.get("outputs", [])):
+                            output_key = f"utxo:{coinbase_tx_id}:{idx}".encode()
+                            print(output_key)
+                            utxo = {
+                                "txid": coinbase_tx_id,
+                                "utxo_index": idx,
+                                "sender": "coinbase",
+                                "receiver": "unknown",
+                                "amount": output.get("value"),
+                                "spent": False
+                            }
+                            print(utxo)
+                            db.put(output_key, json.dumps(utxo).encode())
+                        continue
+
+ 
+                    if "txid" in tx:
+                        txid = tx["txid"]
+
+                        print("txid is")
+                        print(txid)
+
+
+                        inputs = tx.get("inputs", [])
+                        print("inputs are")
+                        print(inputs)
+                        outputs = tx.get("outputs", [])
+                        print("outputs are")
+                        print(outputs)
+                        body = tx.get("body", {})
+                        print("body is")
+                        print(body)
+
+                        pubkey = body.get("pubkey", "unknown") 
+                        signature = body.get("signature","unknown")
+                        to_ = None
+                        from_ = None
+
+                        if (body.get("transaction_data") == "initial_distribution") and (height == 1):
+                            print("im in initial distribution")
+                            total_authorized = 21000000
+                            to_ = ADMIN_ADDRESS
+                            from_ = GENESIS_ADDRESS
+                        else:
+                            message_str = body["msg_str"]
+                            print(message_str)
+                            from_ = message_str.split(":")[0]
+                            print(from_)
+                            to_ = message_str.split(":")[1]  
+                            print(to_)
+                            total_authorized = message_str.split(":")[2]
+                            time_ = message_str.split(":")[3]
+                            print(time_)
+
+                        total_available = Decimal("0")
+                        total_required = Decimal("0")
+
+                        print("im here")
+
+      
+                        for input_ in inputs:
+                            input_receiver = input_.get("receiver")
+                            input_spent = input_.get("spent", False)
+                            input_amount = input_.get("amount", "0")
+
+                            print(f"input receiver {input_receiver}")
+                            print(f"to {to_}")
+                            print(f"from: {from_}")
+                            print(f"input_spent {input_spent}")
+                            print(f"input amount {input_amount}")
+
+                            print("im past inputs")
+
+                            if (input_receiver == from_):
+                                print("input receiver is from")
+
+                                if (height == 1):
+                                    print("coins not spent")
+                                    total_available += Decimal(input_amount)
+                                    print(f"total available increased by {input_amount}")
+
+                                else:
+                                    if (input_spent == False):
+                                        print("coins not spent")
+                                        total_available += Decimal(input_amount)
+                                        print(f"total available increased by {input_amount}")
+
+                        print(f"**** TOTAL AVAILABLE IS {total_available} ")
+
+
+                        for output_ in outputs:
+                            output_receiver = output_.get("receiver")
+                            output_amount = output_.get("amount", "0")
+                            if output_receiver in (to_, ADMIN_ADDRESS, TREASURY_ADDRESS):
+                                total_required += Decimal(output_amount)
+                            else:
+                                print(f"❌ Hack detected! Unauthorized output to {output_receiver}")
+                                raise ValueError("Hack detected, invalid transaction.")
+
+                        print(total_authorized)
+
+                        miner_fee = (Decimal(total_authorized) * Decimal("0.001")).quantize(Decimal("0.00000001"))
+                        treasury_fee = (Decimal(total_authorized) * Decimal("0.001")).quantize(Decimal("0.00000001"))
+                        grand_total_required = Decimal(total_authorized) + miner_fee + treasury_fee
+
+                        if (height > 1):
+                            if grand_total_required > total_available:
+                                print(f"❌ Not enough balance! {total_available} < {grand_total_required}")
+                                raise ValueError("Invalid transaction: insufficient balance.")
+                        
+
+                        if height == 1 or (verify_transaction(message_str, signature, pubkey) == True):
+                            print("✅ Transaction validated successfully.")
+                            batch = WriteBatch()
+
+  
+                            batch.put(f"tx:{txid}".encode(), json.dumps(tx).encode())
+
+                            # Spend each input UTXO
+                            for input_ in inputs:
+                                if "txid" in input_:
+                                    spent_utxo_key = f"utxo:{input_['txid']}:{input_.get('utxo_index', 0)}".encode()
+                                    if spent_utxo_key in db:
+                                        utxo = json.loads(db.get(spent_utxo_key).decode())
+                                        utxo["spent"] = True
+                                        batch.put(spent_utxo_key, json.dumps(utxo).encode())
+                                    else:
+                                        print(f"[SYNC] Warning: input UTXO not found {spent_utxo_key}")
+
+                            # Create UTXOs from outputs
+                            for output in outputs:
+                                output_key = f"utxo:{txid}:{output.get('utxo_index', 0)}".encode()
+                                batch.put(output_key, json.dumps(output).encode())
+
+                            # Atomic commit
+                            db.write(batch)
+                        else:
+                            print("❌ Transaction verification failed.")
+
+                print("tx_ids are")
+                print(tx_ids)
+                calculated_merkle_root = calculate_merkle_root(tx_ids)
+
+                print(calculated_merkle_root)
+                print(block_merkle_root)
+
+                if (calculated_merkle_root == block_merkle_root):
+
+                    block_data = {
+                        "height": height,
+                        "block_hash": block_hash,
+                        "previous_hash": prev_hash,
+                        "tx_ids": tx_ids,
+                        "nonce": nonce,
+                        "timestamp": timestamp,
+                        "miner_address": miner_address,
+                        "merkle_root": calculated_merkle_root
+                    }
+                    db.put(f"block:{block_hash}".encode(), json.dumps(block_data).encode())
+
+                    print(f"[SYNC] Stored block {height} successfully.")
+
         else:
-            print("Peer is already up to date.")
+            print("Peer up to date")
 
         w.close()
         await w.wait_closed()
