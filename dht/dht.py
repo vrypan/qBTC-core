@@ -3,10 +3,13 @@ import json
 import logging
 import aiohttp
 import time
+from decimal import Decimal
 from kademlia.network import Server as KademliaServer
 from config.config import shutdown_event, VALIDATOR_ID, HEARTBEAT_INTERVAL, VALIDATOR_TIMEOUT, VALIDATORS_LIST_KEY, BOOTSTRAP_NODES, DEFAULT_GOSSIP_PORT
 from state.state import validator_keys, known_validators
 from database.database import get_db,get_current_height
+
+from wallet.wallet import verify_transaction
 
 kad_server = None
 
@@ -81,6 +84,7 @@ async def discover_peers_once(gossip_node):
 
 
 async def push_blocks(peer_ip, peer_port):
+    from gossip.gossip import calculate_merkle_root
     print("******* IM IN PUSH BLOCKS ******")
     print(peer_ip)
     print(peer_port)
@@ -183,10 +187,16 @@ async def push_blocks(peer_ip, peer_port):
             w.write((json.dumps(get_blocks_request) + "\n").encode('utf-8'))
             await w.drain()
 
-            response = await r.readline()
+            raw = await r.readline()
+            if not raw:
+                raise ConnectionError("Peer closed the connection")
+            try:
+                response = json.loads(raw.decode())   # dict now
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Bad JSON from peer: {e} — payload was {raw!r}")
 
             blocks = sorted(response.get("blocks", []), key=lambda x: x["height"])
-            logging.info(f"Received {len(blocks)} blocks from {from_peer}")
+            logging.info(f"Received {len(blocks)} blocks from from peer")
 
             db = get_db()
 
