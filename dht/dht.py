@@ -167,7 +167,8 @@ async def push_blocks(peer_ip, peer_port):
             # Now send the blocks
             blocks_message = {
                 "type": "blocks_response",
-                "blocks": blocks_to_send
+                "blocks": blocks_to_send,
+                "timestamp": int(time.time() * 1000)
             }
             w.write((json.dumps(blocks_message) + "\n").encode('utf-8'))
             await w.drain()

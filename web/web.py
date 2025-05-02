@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from typing import Dict, List, Set, Optional
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
-from gossip.gossip import TREASURY_ADDRESS, sha256d
+from gossip.gossip import sha256d
 from blockchain.blockchain import serialize_transaction
 from state.state import pending_transactions
 import logging
@@ -103,7 +103,7 @@ def get_balance(wallet_address: str) -> Decimal:
             if utxo_data["receiver"] == wallet_address and not utxo_data["spent"]:
                 total += Decimal(utxo_data["amount"])
     return total
-    
+
 def get_transactions(wallet_address: str, limit: int = 50):
     db = get_db()
     tx_list = []
@@ -183,7 +183,7 @@ async def simulate_all_transactions():
         for tx in transactions:
             formatted.append({
                 "id": tx["txid"], "hash": tx["txid"], "sender": tx["sender"],
-                "receiver": tx["receiver"], "amount": f"{Decimal(tx['amount']):.8f} BQS",
+                "receiver": tx["receiver"], "amount": f"{Decimal(tx['amount']):.8f} qBTC",
                 "timestamp": datetime.fromtimestamp(tx["timestamp"] / 1000).isoformat(),  # Convert to ISO
                 "status": "confirmed"
             })
@@ -218,7 +218,7 @@ async def simulate_combined_updates(wallet_address: str):
             tx_type = "send" if tx["direction"] == "sent" else "receive"
             
             amt_dec = Decimal(tx["amount"])
-            amount_fmt = f"{abs(amt_dec):.8f} BQS"
+            amount_fmt = f"{abs(amt_dec):.8f} qBTC"
 
             address = tx["counterpart"] if tx["counterpart"] else "n/a"
 
@@ -346,8 +346,7 @@ async def worker_endpoint(request: Request):
                     total_available += amount_decimal
 
         miner_fee = (Decimal(send_amount) * Decimal("0.001")).quantize(Decimal("0.00000001"))
-        treasury_fee = (Decimal(send_amount) * Decimal("0.001")).quantize(Decimal("0.00000001"))
-        total_required = Decimal(send_amount) + miner_fee + treasury_fee
+        total_required = Decimal(send_amount) + Decimal(miner_fee)
         
         if total_available < total_required:
             return {
@@ -357,7 +356,6 @@ async def worker_endpoint(request: Request):
 
         outputs = [
             {"utxo_index": 0, "sender": sender_, "receiver": receiver_, "amount": str(send_amount), "spent": False},
-            {"utxo_index": 2, "sender": sender_, "receiver": TREASURY_ADDRESS, "amount": str(treasury_fee), "spent": False}
         ]
 
         change = total_available - total_required
@@ -384,6 +382,7 @@ async def worker_endpoint(request: Request):
         for output in transaction["outputs"]:
             output["txid"] = txid
         pending_transactions[txid] = transaction
+        db.put(b"tx:" + txid.encode(), json.dumps(transaction).encode())
 
         await gossip_client.randomized_broadcast(transaction)
 
