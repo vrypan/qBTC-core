@@ -1,0 +1,48 @@
+version: "3.8"
+
+services:
+  bootstrap:
+    build: .
+    container_name: bootstrap-node
+    environment:
+      WALLET_PASSWORD: "bootstrappass"
+      WALLET_FILE: "bootstrap.json"
+    command: ["8001", "8002", "--wallet", "bootstrap.json", "--local"]
+    ports:
+      - "8080:8080"     # Web API
+      - "8332:8332"     # RPC
+      - "8001:8001/udp" # DHT UDP
+      - "8002:8002"     # Gossip TCP
+    restart: unless-stopped
+
+  validator1:
+    build: .
+    container_name: validator1
+    environment:
+      WALLET_PASSWORD: "validator1pass"
+      WALLET_FILE: "validator1.json"
+    command: ["8003", "8004", "--wallet", "validator1.json", "--Bootstrap_ip", "bootstrap-node", "--Bootstrap_port", "8001", "--local"]
+    depends_on:
+      - bootstrap
+    ports:
+      - "8081:8080"
+      - "8333:8332"
+      - "8003:8003/udp"
+      - "8004:8004"
+    restart: unless-stopped
+
+  validator2:
+    build: .
+    container_name: validator2
+    environment:
+      WALLET_PASSWORD: "validator2pass"
+      WALLET_FILE: "validator2.json"
+    command: ["8005", "8006", "--wallet", "validator2.json", "--Bootstrap_ip", "bootstrap-node", "--Bootstrap_port", "8001", "--local"]
+    depends_on:
+      - bootstrap
+    ports:
+      - "8082:8080"
+      - "8334:8332"
+      - "8005:8005/udp"
+      - "8006:8006"
+    restart: unless-stopped
