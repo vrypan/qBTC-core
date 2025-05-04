@@ -238,6 +238,8 @@ async def submit_block(request: Request, data: str) -> dict:
 
     print("****** MERKLE HEADERS MATCH")
     block_data = {
+        "version": version,
+        "bits": bits,
         "height": get_current_height(db)[0] + 1,
         "block_hash": block.hash(),
         "previous_hash": prev_block,

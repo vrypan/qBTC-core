@@ -15,11 +15,11 @@ from wallet.wallet import verify_transaction
 kad_server = None
 
 async def get_external_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect(("8.8.8.8", 80))
-    ip = s.getsockname()[0]
-    s.close()
-    return ip
+    global own_ip
+    async with aiohttp.ClientSession() as session:
+        async with session.get('https://api.ipify.org') as response:
+            own_ip = await response.text()
+            return own_ip
 
 async def run_kad_server(port, bootstrap_addr=None, wallet=None, gossip_node=None):
     global kad_server

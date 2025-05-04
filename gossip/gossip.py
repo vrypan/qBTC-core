@@ -3,13 +3,13 @@ import json
 import time
 import logging
 import random
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_DOWN
 from asyncio import StreamReader, StreamWriter
-from config.config import DEFAULT_GOSSIP_PORT, VALIDATOR_ID, ROCKSDB_PATH
+from config.config import DEFAULT_GOSSIP_PORT, VALIDATOR_ID, ROCKSDB_PATH, ADMIN_ADDRESS,GENESIS_ADDRESS
 from state.state import pending_transactions, mined_blocks
 from wallet.wallet import verify_transaction
 from database.database import get_db, get_current_height
-from blockchain.blockchain import sha256d, calculate_merkle_root
+from blockchain.blockchain import Block ,sha256d, calculate_merkle_root, validate_pow
 from dht.dht import push_blocks
 from rocksdict import WriteBatch
 import hashlib
@@ -131,6 +131,19 @@ class GossipNode:
                 miner_address = block.get("miner_address")
                 full_transactions = block.get("full_transactions", [])
                 block_merkle_root = block.get("merkle_root")
+                version = block.get("version")
+                bits = block.get("bits")
+                print(f"version {version}")
+                print(f"prevhash {prev_hash}")
+                print(f"block_merkle_root {block_merkle_root}")
+                print(f"timestamp {timestamp}")
+                print(f"bits {bits}")
+                print(f"nonce {nonce}")
+                block_header = Block(version,prev_hash,block_merkle_root,timestamp,bits,nonce)
+
+                if not validate_pow(block_header):
+                    raise ValueError(f"PoW validation failed for block {height} {block_hash}")
+
 
                 logging.info("[SYNC] Processing block height %s with hash %s", height, block_hash)
 
@@ -156,7 +169,7 @@ class GossipNode:
                                 "utxo_index": idx,
                                 "sender": "coinbase",
                                 "receiver": miner_address,   
-                                "amount": output.get("value"),
+                                "amount": output.get("value"), ##value here assumes 50BTC however we need to update this to reflect inputs-outputs (tx feees)
                                 "spent": False,
                             }
                             batch.put(output_key, json.dumps(utxo).encode())
@@ -187,11 +200,20 @@ class GossipNode:
                         total_required = Decimal("0")
 
                         for inp in inputs:
-                            if inp.get("receiver") != from_:
+                            if "txid" not in inp:
                                 continue
-                            if inp.get("spent", False):
-                                continue
-                            total_available += Decimal(inp.get("amount", "0"))
+                            spent_key = f"utxo:{inp['txid']}:{inp.get('utxo_index', 0)}".encode()
+                            utxo_raw = db.get(spent_key)
+                            if not utxo_raw:
+                                raise ValueError(f"Missing UTXO for input: {spent_key}")
+                            utxo = json.loads(utxo_raw.decode())
+
+                            if utxo["spent"]:
+                                raise ValueError(f"UTXO {spent_key} already spent")
+                            if utxo["receiver"] != from_:
+                                raise ValueError(f"UTXO {spent_key} not owned by sender {from_}")
+
+                            total_available += Decimal(utxo["amount"])
 
                         for out in outputs:
                             recv = out.get("receiver")
@@ -209,7 +231,7 @@ class GossipNode:
                                     f"Hack detected: unauthorized output to {recv} in tx {txid}")
 
                         miner_fee = (Decimal(total_authorized) * Decimal("0.001")).quantize(
-                            Decimal("0.00000001"), rounding=ROUND_HALF_UP)
+                            Decimal("0.00000001"), rounding=ROUND_DOWN)
                         grand_total_required = Decimal(total_authorized) + miner_fee
 
                         if height > 1 and grand_total_required > total_available:
@@ -332,7 +354,7 @@ class GossipNode:
         )
         for peer, result in zip(peers_to_send, results):
             if isinstance(result, Exception):
-                logging.warning("broadcast → %s failed: %s", peer, result)
+                logging.warning("broadcast  %s failed: %s", peer, result)
 
     async def _send_message(self, peer, payload):
         for attempt in range(3):
