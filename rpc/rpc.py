@@ -5,9 +5,9 @@ from database.database import get_db, get_current_height
 from pydantic import BaseModel
 from typing import Dict, List, Set, Optional
 from decimal import Decimal
-from gossip.gossip import sha256d, calculate_merkle_root, ADMIN_ADDRESS
+from config.config import ADMIN_ADDRESS
 from wallet.wallet import verify_transaction
-from blockchain.blockchain import Block, bits_to_target, serialize_transaction,scriptpubkey_to_address, read_varint, parse_tx, validate_pow
+from blockchain.blockchain import Block, bits_to_target, serialize_transaction,scriptpubkey_to_address, read_varint, parse_tx, validate_pow, sha256d, calculate_merkle_root
 from state.state import blockchain, state_lock, pending_transactions
 from rocksdict import WriteBatch
 import asyncio
@@ -238,6 +238,8 @@ async def submit_block(request: Request, data: str) -> dict:
 
     print("****** MERKLE HEADERS MATCH")
     block_data = {
+        "version": version,
+        "bits": bits,
         "height": get_current_height(db)[0] + 1,
         "block_hash": block.hash(),
         "previous_hash": prev_block,

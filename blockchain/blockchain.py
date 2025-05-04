@@ -1,14 +1,30 @@
 import struct
-from gossip.gossip import sha256d
+from config.config import ADMIN_ADDRESS,GENESIS_ADDRESS, DIFFICULTY_ADJUSTMENT_INTERVAL, BLOCK_TIME_TARGET
 import hashlib
 import base58
 import json
-# Blockchain state 
-GENESIS_ADDRESS = "bqs1genesis00000000000000000000000000000000"
-ADMIN_ADDRESS = "bqs1HpmbeSd8nhRpq5zX5df91D3Xy8pSUovmV"
-BLOCK_TIME_TARGET = 10  # Target block time in seconds
-DIFFICULTY_ADJUSTMENT_INTERVAL = 10  # Blocks before difficulty adjustment
 
+
+def sha256d(b: bytes) -> bytes:
+    return hashlib.sha256(hashlib.sha256(b).digest()).digest()
+
+def calculate_merkle_root(txids: list[str]) -> str:
+    if not txids:
+        return sha256d(b"").hex()
+    
+    hashes = [bytes.fromhex(txid)[::-1] for txid in txids]  # little-endian
+
+    while len(hashes) > 1:
+        if len(hashes) % 2 == 1:
+            hashes.append(hashes[-1])  # duplicate last if odd
+
+        new_hashes = []
+        for i in range(0, len(hashes), 2):
+            combined = hashes[i] + hashes[i + 1]
+            new_hashes.append(sha256d(combined))
+        hashes = new_hashes
+
+    return hashes[0][::-1].hex()  # return as hex, big-endian
 
 def bits_to_target(bits: int) -> int:
     exponent = bits >> 24
