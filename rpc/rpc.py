@@ -1,17 +1,17 @@
-from fastapi import FastAPI, Request, Depends
+from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from database.database import get_db, get_current_height
 from pydantic import BaseModel
 from typing import Dict, List, Set, Optional
 from decimal import Decimal
-from state.state import pending_transactions
-from gossip.gossip import sha256d, calculate_merkle_root, ADMIN_ADDRESS,TREASURY_ADDRESS
+from gossip.gossip import sha256d, calculate_merkle_root, ADMIN_ADDRESS
 from wallet.wallet import verify_transaction
 from blockchain.blockchain import Block, bits_to_target, serialize_transaction,scriptpubkey_to_address, read_varint, parse_tx, validate_pow
-from state.state import blockchain
+from state.state import blockchain, state_lock, pending_transactions
 from rocksdict import WriteBatch
-import logger
+import asyncio
+import copy
 import time
 import struct
 import json
@@ -30,15 +30,15 @@ async def rpc_handler(request: Request):
     if method == "getblocktemplate":
         return await get_block_template(data)
     elif method == "submitblock":
-        return await submit_block(data)
+        return await submit_block(request,data)
     else:
         return {"error": "unknown method", "id": data.get("id")}
 
 
 async def get_block_template(data):
     print(data)
-    timestamp = int(time.time())
     db = get_db()
+    timestamp = int(time.time())
     height, previous_block_hash = get_current_height(db)
     transactions = []
     txids = [] 
@@ -46,10 +46,10 @@ async def get_block_template(data):
     #if (len(pending_transactions.values()) == 0):
     #    return "bcdadsfasdf"
 
-    for tx in pending_transactions.values():
 
+    for orig_tx in pending_transactions.values():
+        tx = copy.deepcopy(orig_tx)
         txid = tx["txid"]
-        db.put(b"tx:" + txid.encode(), json.dumps(tx).encode())
         if "txid" in tx:
             del tx["txid"]
         for output in tx.get("outputs", []):
@@ -88,10 +88,12 @@ async def get_block_template(data):
 
 
 
-async def submit_block(data: str) -> dict:
+async def submit_block(request: Request, data: str) -> dict:
+    gossip_client = request.app.state.gossip_client
     raw_block_hex = data["params"][0]
     raw = bytes.fromhex(raw_block_hex)
     db = get_db()
+    batch = WriteBatch()  
     txids = []
     tx_list = []
     transactions = []
@@ -103,6 +105,28 @@ async def submit_block(data: str) -> dict:
     bits = struct.unpack_from('<I', hdr, 72)[0] 
     nonce = struct.unpack_from('<I', hdr, 76)[0]
     block = Block(version, prev_block, merkle_root_block, timestamp, bits, nonce)
+
+    if not validate_pow(block):
+        print("****** BLOCK VALIDATION FAILED ****")
+        return
+    else:
+        print("****** SUCCESS")
+
+    height_temp = get_current_height(db)
+    local_height = height_temp[0]
+    local_tip = height_temp[1]
+
+    print(f"Local height: {local_height}, Local tip: {local_tip}")
+
+    if (prev_block != local_tip):
+        raise HTTPException(400, "Forked too early / bad prev-hash")
+
+    future_limit = int(time.time()) + 2*60 # 2 mins in the future
+
+    if (timestamp > future_limit):
+         raise HTTPException(400, "Block from the future")
+
+
     offset = 80
     tx_count, sz = read_varint(raw, offset)
     offset += sz
@@ -115,13 +139,14 @@ async def submit_block(data: str) -> dict:
     coinbase_raw = raw[coinbase_start:coinbase_start + size]
     coinbase_txid = sha256d(coinbase_raw)[::-1].hex() 
     print(f"****** COINBASE TXID: {coinbase_txid}")
-    db.put(b"tx:" + coinbase_txid.encode(), json.dumps(coinbase_tx).encode())
+    txids.append(coinbase_txid)
+
+    batch.put(b"tx:" + coinbase_txid.encode(), json.dumps(coinbase_tx).encode())
 
     #
     # Add mapping to quantum safe miner address here through endpoint 
     #
 
-    txids.append(coinbase_txid)
     offset += size
     blob = raw[offset:].decode('utf-8')
     decoder = json.JSONDecoder()
@@ -132,11 +157,7 @@ async def submit_block(data: str) -> dict:
         pos = next_pos
         while pos < len(blob) and blob[pos] in ' \t\r\n,':
             pos += 1
-    if not validate_pow(block):
-        print("****** BLOCK VALIDATION FAILED ****")
-        return
-    else:
-        print("****** SUCCESS")
+  
 
 
     for i, tx in enumerate(tx_list, start=1):
@@ -170,21 +191,24 @@ async def submit_block(data: str) -> dict:
                 output_receiver = output_["receiver"]
                 output_amount = output_["amount"]
                 output_spent = output_["spent"]
-                if output_receiver in (to_, ADMIN_ADDRESS, TREASURY_ADDRESS):
+                if output_receiver in (to_, ADMIN_ADDRESS):
                     total_required += Decimal(output_amount)
                 else:
-                    return "Fuck hack"
+                    raise HTTPException(status_code=400, detail="Output receiver is invalid")
             miner_fee = (Decimal(total_authorised) * Decimal("0.001")).quantize(Decimal("0.00000001"))
-            treasury_fee = (Decimal(total_authorised) * Decimal("0.001")).quantize(Decimal("0.00000001"))
-            total_required = Decimal(total_authorised) + Decimal(miner_fee) + Decimal(treasury_fee)
+            total_required = Decimal(total_authorised) + Decimal(miner_fee)
             if (total_required <= total_available):
-                batch = WriteBatch()
-                # Spend inputs
+                   # Spend inputs
                 for input_ in inputs:
                     utxo_key = f"utxo:{input_['txid']}:{input_['utxo_index']}".encode()
                     if utxo_key in db:
                         print(f"****** Marking utxo {utxo_key} as spent")
-                        utxo = json.loads(db.get(utxo_key).decode())
+                        utxo_raw = db.get(utxo_key)
+                        if utxo_raw is None:
+                            raise HTTPException(400, "Input not found")
+                        utxo = json.loads(utxo_raw.decode())
+                        if utxo["spent"]:
+                            raise HTTPException(400, "Double-spend")
                         utxo["spent"] = True
                         batch.put(utxo_key, json.dumps(utxo).encode())
                         print(f"****** Done marking {utxo_key} as spent")
@@ -204,28 +228,55 @@ async def submit_block(data: str) -> dict:
                     print(f"****** Created UTXO {utxo_key} → {utxo_value}")
 
                 # Commit all changes atomically
-                db.write(batch)
-                del pending_transactions[txid]
+                #db.write(batch)
+                #del pending_transactions[txid]
 
 
     calculated_merkle = calculate_merkle_root(txids)
-    print(calculated_merkle)
-    print(merkle_root_block)
-    if (calculated_merkle == merkle_root_block):
-        print("****** MERKLE HEADERS MATCH")
+    if calculated_merkle != merkle_root_block:
+        raise HTTPException(400, "Merkle root mismatch")
 
+    print("****** MERKLE HEADERS MATCH")
+    block_data = {
+        "height": get_current_height(db)[0] + 1,
+        "block_hash": block.hash(),
+        "previous_hash": prev_block,
+        "tx_ids": txids,
+        "nonce": nonce,
+        "timestamp": timestamp,
+        "merkle_root": calculated_merkle,
+        "miner_address": coinbase_miner_address, 
+    }
+    batch.put(b"block:" + block.hash().encode(), json.dumps(block_data).encode())
+    db.write(batch)
 
-        block_data = {
-            "height": get_current_height(db)[0] + 1,
-            "block_hash": block.hash(),
-            "previous_hash": prev_block,
-            "tx_ids": txids,
-            "nonce": nonce,
-            "timestamp": timestamp,
-            "merkle_root": calculated_merkle,
-            "miner_address": coinbase_miner_address, 
-        }
-        db.put(b"block:" + block.hash().encode(), json.dumps(block_data).encode())
+    for tid in txids[1:]:
+        pending_transactions.pop(tid, None)
+
+    async with state_lock:
         blockchain.append(block.hash())
-        print(f"Block added: {block.hash()} with {len(tx_list)} transactions")
-        return {"result": None, "error": None, "id": data["id"]}
+    print(f"Block added: {block.hash()} with {len(tx_list)} transactions")
+
+    full_transactions = []
+    for tx_id in block_data.get("tx_ids", []):
+        tx_key = f"tx:{tx_id}".encode()
+        if tx_key in db:
+            tx_data = json.loads(db[tx_key].decode())
+            full_transactions.append(tx_data)
+
+
+    block_data["full_transactions"] = full_transactions
+
+
+    
+    block_gossip = {
+            "type": "blocks_response",
+            "blocks": block_data,
+            "timestamp": int(time.time() * 1000)
+    }
+
+    await gossip_client.randomized_broadcast(block_gossip)
+
+    return {"result": None, "error": None, "id": data["id"]}
+
+

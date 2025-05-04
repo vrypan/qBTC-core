@@ -167,7 +167,8 @@ async def push_blocks(peer_ip, peer_port):
             # Now send the blocks
             blocks_message = {
                 "type": "blocks_response",
-                "blocks": blocks_to_send
+                "blocks": blocks_to_send,
+                "timestamp": int(time.time() * 1000)
             }
             w.write((json.dumps(blocks_message) + "\n").encode('utf-8'))
             await w.drain()
@@ -333,7 +334,7 @@ async def push_blocks(peer_ip, peer_port):
                         for output_ in outputs:
                             output_receiver = output_.get("receiver")
                             output_amount = output_.get("amount", "0")
-                            if output_receiver in (to_, ADMIN_ADDRESS, TREASURY_ADDRESS):
+                            if output_receiver in (to_, ADMIN_ADDRESS):
                                 total_required += Decimal(output_amount)
                             else:
                                 print(f"❌ Hack detected! Unauthorized output to {output_receiver}")

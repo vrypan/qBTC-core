@@ -3,7 +3,7 @@ import json
 import time
 import logging
 import random
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from asyncio import StreamReader, StreamWriter
 from config.config import DEFAULT_GOSSIP_PORT, VALIDATOR_ID, ROCKSDB_PATH
 from state.state import pending_transactions, mined_blocks
@@ -14,8 +14,8 @@ from rocksdict import WriteBatch
 import hashlib
 
 GENESIS_HASH = "0" * 64
+MAX_LINE_BYTES = 30 * 1024 * 1024  
 # Blockchain state 
-TREASURY_ADDRESS = "bqs1GPSETB9KzXeYWHfs2zMGPv5VKhLTPSvhm"
 GENESIS_ADDRESS = "bqs1genesis00000000000000000000000000000000"
 ADMIN_ADDRESS = "bqs1HpmbeSd8nhRpq5zX5df91D3Xy8pSUovmV"
 
@@ -58,22 +58,22 @@ class GossipNode:
             # Temporary workaround until DHT is fully debugged
         #    self.dht_peers.add(('api.bitcoinqs.org', 7002))
 
-
      
 
     async def start_server(self, host="0.0.0.0", port=DEFAULT_GOSSIP_PORT):
-        self.server = await asyncio.start_server(self.handle_client, host, port)
+        self.server = await asyncio.start_server(self.handle_client, host, port, limit=MAX_LINE_BYTES)
         self.server_task = asyncio.create_task(self.server.serve_forever())
-        self.partition_task = asyncio.create_task(self.check_partition())
+        #self.partition_task = asyncio.create_task(self.check_partition())
 
     async def handle_client(self, reader: StreamReader, writer: StreamWriter):
         peer_info = writer.get_extra_info('peername')
+        print(f"******* PEER INFO IS {peer_info}")
         if peer_info not in self.client_peers and peer_info not in self.dht_peers:
             self.client_peers.add(peer_info)
             logging.info(f"Added temporary client peer {peer_info}")
         try:
             while True:
-                line = await reader.readline()
+                line = await asyncio.wait_for(reader.readline(), timeout=10)
                 if not line:
                     break
                 msg = json.loads(line.decode('utf-8').strip())
@@ -91,8 +91,10 @@ class GossipNode:
         timestamp = msg.get("timestamp", int(time.time() * 1000))
         tx_id = msg.get("tx_id")
 
+        print(msg)
 
-        if timestamp < int(time.time() * 1000) - 60000:  # Ignore messages older than 60 seconds
+
+        if timestamp < int(time.time() * 1000) - 60000:  
             print("**** TRANSACTION IS STALE")
             return
 
@@ -103,218 +105,179 @@ class GossipNode:
                 return
             if not verify_transaction(msg["body"]["msg_str"], msg["body"]["signature"], msg["body"]["pubkey"]):
                 return
-            pending_transactions[tx_id] = msg
+            tx_lock = asyncio.Lock()
+            async with tx_lock:
+                if tx_id in pending_transactions:
+                    return
+                pending_transactions[tx_id] = msg
             await self.randomized_broadcast(msg)
             self.seen_tx.add(tx_id)
 
         elif msg_type == "blocks_response":
-            print("***** IN GOSSIP MSG RECEIVE BLOCKS RESPONSE")
-            blocks = sorted(msg.get("blocks", []), key=lambda x: x["height"])
-            logging.info(f"Received {len(blocks)} blocks from {from_peer}")
-
+            logging.info("***** IN GOSSIP MSG RECEIVE BLOCKS RESPONSE")
             db = get_db()
+            raw_blocks = msg.get("blocks", [])
+            if isinstance(raw_blocks, dict):
+                raw_blocks = [raw_blocks]
+
+            blocks = sorted(raw_blocks, key=lambda b: b["height"])
+            logging.info("Received %d blocks from %s", len(blocks), from_peer)
 
             for block in blocks:
+                db_height, db_hash = get_current_height(db)
                 height = block.get("height")
-                print(height)
                 block_hash = block.get("block_hash")
-                print(block_hash)
                 prev_hash = block.get("previous_hash")
+
+
+                if height != db_height + 1:
+                    print("Height mismatch")
+                    logging.debug("Out-of-sequence block %s (height %s)", block_hash, height)
+                    continue
+
+                if prev_hash != db_hash:
+                    print("tip mismatch")
+                    logging.debug("Previous hash %s doesn’t match tip %s", prev_hash, db_hash)
+                    continue
+
                 block_key = f"block:{block_hash}".encode()
+
                 if block_key in db:
-                    logging.info(f"Block {block_hash} already exists in DB. Skipping.")
-                    continue 
-                print(prev_hash)
+                    logging.debug("Block %s already exists in DB – skipping", block_hash)
+                    continue
+
                 tx_ids = block.get("tx_ids", [])
-                print(tx_ids)
                 nonce = block.get("nonce")
-                print(nonce)
                 timestamp = block.get("timestamp")
-                print(timestamp)
                 miner_address = block.get("miner_address")
-                print(miner_address)
                 full_transactions = block.get("full_transactions", [])
-                print(full_transactions)
                 block_merkle_root = block.get("merkle_root")
 
-                print(f"[SYNC] Processing block height {height} with hash {block_hash}")
+                logging.info("[SYNC] Processing block height %s with hash %s", height, block_hash)
+
+                batch = WriteBatch()
+
 
                 for tx in full_transactions:
-                    # 1. Genesis Transaction
                     if tx.get("tx_id") == "genesis_tx":
-                        print("[SYNC] Genesis transaction detected.")
-                        db.put(b"tx:genesis_tx", json.dumps(tx).encode())
+                        logging.debug("[SYNC] Genesis transaction detected")
+                        batch.put(b"tx:genesis_tx", json.dumps(tx).encode())
                         continue
 
-                    # 2. Coinbase Transaction (special case)
-                    if "version" in tx and "inputs" in tx and "outputs" in tx:
-                        print("[SYNC] Coinbase transaction detected.")
-                        coinbase_tx_id = "coinbase_" + str(height)
-                        print("coinbase_tx_id")
-                        print(coinbase_tx_id)
-                        db.put(f"tx:{coinbase_tx_id}".encode(), json.dumps(tx).encode())
+                    is_probable_coinbase = all(k in tx for k in ("version", "inputs", "outputs")) and not tx.get("txid")
+                    if is_probable_coinbase:
+                        logging.debug("[SYNC] Coinbase transaction detected")
+                        coinbase_tx_id = f"coinbase_{height}"
+                        batch.put(f"tx:{coinbase_tx_id}".encode(), json.dumps(tx).encode())
 
                         for idx, output in enumerate(tx.get("outputs", [])):
                             output_key = f"utxo:{coinbase_tx_id}:{idx}".encode()
-                            print(output_key)
                             utxo = {
                                 "txid": coinbase_tx_id,
                                 "utxo_index": idx,
                                 "sender": "coinbase",
-                                "receiver": "unknown",
+                                "receiver": miner_address,   
                                 "amount": output.get("value"),
-                                "spent": False
+                                "spent": False,
                             }
-                            print(utxo)
-                            db.put(output_key, json.dumps(utxo).encode())
+                            batch.put(output_key, json.dumps(utxo).encode())
                         continue
 
-                    # 3. Regular Transaction
                     if "txid" in tx:
                         txid = tx["txid"]
-
-                        print("txid is")
-                        print(txid)
-
-                        # Perform **inline validation** before accepting
                         inputs = tx.get("inputs", [])
-                        print("inputs are")
-                        print(inputs)
                         outputs = tx.get("outputs", [])
-                        print("outputs are")
-                        print(outputs)
                         body = tx.get("body", {})
-                        print("body is")
-                        print(body)
 
-                        pubkey = body.get("pubkey", "unknown") 
-                        signature = body.get("signature","unknown")
-                        to_ = None
-                        from_ = None
+                        pubkey = body.get("pubkey", "unknown")
+                        signature = body.get("signature", "unknown")
 
-                        if (body.get("transaction_data") == "initial_distribution") and (height == 1):
-                            print("im in initial distribution")
-                            total_authorized = 21000000
+                        from_ = to_ = total_authorized = time_ = None
+                        if body.get("transaction_data") == "initial_distribution" and height == 1:
+                            total_authorized = "21000000"  
                             to_ = ADMIN_ADDRESS
                             from_ = GENESIS_ADDRESS
                         else:
-                            message_str = body["msg_str"]
-                            print(message_str)
-                            from_ = message_str.split(":")[0]
-                            print(from_)
-                            to_ = message_str.split(":")[1]  # extract 'to' address from msg
-                            print(to_)
-                            total_authorized = message_str.split(":")[2]
-                            time_ = message_str.split(":")[3]
-                            print(time_)
+                            msg_str = body.get("msg_str", "")
+                            parts = msg_str.split(":")
+                            if len(parts) != 4:
+                                raise ValueError(f"Malformed msg_str in tx {txid}: {msg_str}")
+                            from_, to_, total_authorized, time_ = parts
 
                         total_available = Decimal("0")
                         total_required = Decimal("0")
 
-                        print("im here")
+                        for inp in inputs:
+                            if inp.get("receiver") != from_:
+                                continue
+                            if inp.get("spent", False):
+                                continue
+                            total_available += Decimal(inp.get("amount", "0"))
 
-                        # Calculate available balance from inputs
-                        for input_ in inputs:
-                            input_receiver = input_.get("receiver")
-                            input_spent = input_.get("spent", False)
-                            input_amount = input_.get("amount", "0")
-
-                            print(f"input receiver {input_receiver}")
-                            print(f"to {to_}")
-                            print(f"from: {from_}")
-                            print(f"input_spent {input_spent}")
-                            print(f"input amount {input_amount}")
-
-                            print("im past inputs")
-
-                            if (input_receiver == from_):
-                                print("input receiver is from")
-
-                                if (height == 1):
-                                    print("coins not spent")
-                                    total_available += Decimal(input_amount)
-                                    print(f"total available increased by {input_amount}")
-
-                                else:
-                                    if (input_spent == False):
-                                        print("coins not spent")
-                                        total_available += Decimal(input_amount)
-                                        print(f"total available increased by {input_amount}")
-
-                        print(f"**** TOTAL AVAILABLE IS {total_available} ")
-
-                        # Calculate required amount from outputs
-                        for output_ in outputs:
-                            output_receiver = output_.get("receiver")
-                            output_amount = output_.get("amount", "0")
-                            if output_receiver in (to_, ADMIN_ADDRESS, TREASURY_ADDRESS):
-                                total_required += Decimal(output_amount)
+                        for out in outputs:
+                            recv = out.get("receiver")
+                            amt = Decimal(out.get("amount", "0"))
+                            print(out)
+                            print("receiver:")
+                            print(recv)
+                            print("to:")
+                            print(to_)
+                            print(ADMIN_ADDRESS)
+                            if recv in (to_, ADMIN_ADDRESS):
+                                total_required += amt
                             else:
-                                print(f"❌ Hack detected! Unauthorized output to {output_receiver}")
-                                raise ValueError("Hack detected, invalid transaction.")
+                                raise ValueError(
+                                    f"Hack detected: unauthorized output to {recv} in tx {txid}")
 
-                        print(total_authorized)
+                        miner_fee = (Decimal(total_authorized) * Decimal("0.001")).quantize(
+                            Decimal("0.00000001"), rounding=ROUND_HALF_UP)
+                        grand_total_required = Decimal(total_authorized) + miner_fee
 
-                        miner_fee = (Decimal(total_authorized) * Decimal("0.001")).quantize(Decimal("0.00000001"))
-                        treasury_fee = (Decimal(total_authorized) * Decimal("0.001")).quantize(Decimal("0.00000001"))
-                        grand_total_required = Decimal(total_authorized) + miner_fee + treasury_fee
+                        if height > 1 and grand_total_required > total_available:
+                            raise ValueError(
+                                f"Invalid tx {txid}: balance {total_available} < required {grand_total_required}")
 
-                        if (height > 1):
-                            if grand_total_required > total_available:
-                                print(f"❌ Not enough balance! {total_available} < {grand_total_required}")
-                                raise ValueError("Invalid transaction: insufficient balance.")
-                        
+                        if height != 1 and not verify_transaction(msg_str, signature, pubkey):
+                            raise ValueError(f"Signature check failed for tx {txid}")
 
-                        if height == 1 or (verify_transaction(message_str, signature, pubkey) == True):
-                            print("✅ Transaction validated successfully.")
-                            batch = WriteBatch()
+                        batch.put(f"tx:{txid}".encode(), json.dumps(tx).encode())
 
-                            # Store the transaction
-                            batch.put(f"tx:{txid}".encode(), json.dumps(tx).encode())
+                        for inp in inputs:
+                            if "txid" not in inp:
+                                continue
+                            spent_key = f"utxo:{inp['txid']}:{inp.get('utxo_index', 0)}".encode()
+                            if spent_key in db:
+                                utxo_rec = json.loads(db.get(spent_key).decode())
+                                utxo_rec["spent"] = True
+                                batch.put(spent_key, json.dumps(utxo_rec).encode())
 
-                            # Spend each input UTXO
-                            for input_ in inputs:
-                                if "txid" in input_:
-                                    spent_utxo_key = f"utxo:{input_['txid']}:{input_.get('utxo_index', 0)}".encode()
-                                    if spent_utxo_key in db:
-                                        utxo = json.loads(db.get(spent_utxo_key).decode())
-                                        utxo["spent"] = True
-                                        batch.put(spent_utxo_key, json.dumps(utxo).encode())
-                                    else:
-                                        print(f"[SYNC] Warning: input UTXO not found {spent_utxo_key}")
+      
+                        for out in outputs:
+                            out_key = f"utxo:{txid}:{out.get('utxo_index', 0)}".encode()
+                            batch.put(out_key, json.dumps(out).encode())
 
-                            # Create UTXOs from outputs
-                            for output in outputs:
-                                output_key = f"utxo:{txid}:{output.get('utxo_index', 0)}".encode()
-                                batch.put(output_key, json.dumps(output).encode())
+                calculated_root = calculate_merkle_root(tx_ids)
+                if calculated_root != block_merkle_root:
+                    raise ValueError(
+                        f"Merkle root mismatch at height {height}: {calculated_root} != {block_merkle_root}")
 
-                            # Atomic commit
-                            db.write(batch)
-                        else:
-                            print("❌ Transaction verification failed.")
 
-                print("tx_ids are")
-                print(tx_ids)
-                calculated_merkle_root = calculate_merkle_root(tx_ids)
+                block_record = {
+                    "height": height,
+                    "block_hash": block_hash,
+                    "previous_hash": prev_hash,
+                    "tx_ids": tx_ids,
+                    "nonce": nonce,
+                    "timestamp": timestamp,
+                    "miner_address": miner_address,
+                    "merkle_root": calculated_root,
+                }
+                batch.put(block_key, json.dumps(block_record).encode())
 
-                print(calculated_merkle_root)
-                print(block_merkle_root)
+     
+                db.write(batch)
 
-                if (calculated_merkle_root == block_merkle_root):
-                    # Store the block itself after processing all txs
-                    block_data = {
-                        "height": height,
-                        "block_hash": block_hash,
-                        "previous_hash": prev_hash,
-                        "tx_ids": tx_ids,
-                        "nonce": nonce,
-                        "timestamp": timestamp,
-                        "miner_address": miner_address,
-                        "merkle_root": calculated_merkle_root
-                    }
-                    db.put(f"block:{block_hash}".encode(), json.dumps(block_data).encode())
-
-                    print(f"[SYNC] Stored block {height} successfully.")
+                logging.info("[SYNC] Stored block %s (height %s) successfully", block_hash, height)
 
                 
 
@@ -378,18 +341,24 @@ class GossipNode:
   
 
     async def randomized_broadcast(self, msg_dict):
-        peers = self.dht_peers | self.client_peers  # Use both DHT and client peers for broadcasting
+        peers = self.dht_peers | self.client_peers 
         if not peers:
             return
         num_peers = max(2, int(len(peers) ** 0.5))
         peers_to_send = random.sample(list(peers), min(len(peers), num_peers))
         payload = (json.dumps(msg_dict) + "\n").encode('utf-8')
-        await asyncio.gather(*[self._send_message(peer, payload) for peer in peers_to_send])
+        results = await asyncio.gather(
+            *[self._send_message(p, payload) for p in peers_to_send],
+            return_exceptions=True          
+        )
+        for peer, result in zip(peers_to_send, results):
+            if isinstance(result, Exception):
+                logging.warning("broadcast → %s failed: %s", peer, result)
 
     async def _send_message(self, peer, payload):
         for attempt in range(3):
             try:
-                r, w = await asyncio.open_connection(peer[0], peer[1])
+                r, w = await asyncio.open_connection(peer[0], peer[1], limit=MAX_LINE_BYTES)
                 w.write(payload)
                 await w.drain()
                 w.close()
