@@ -5,7 +5,7 @@ from database.database import get_db, get_current_height
 from pydantic import BaseModel
 from typing import Dict, List, Set, Optional
 from decimal import Decimal
-from gossip.gossip import sha256d, calculate_merkle_root, ADMIN_ADDRESS,TREASURY_ADDRESS
+from gossip.gossip import sha256d, calculate_merkle_root, ADMIN_ADDRESS
 from wallet.wallet import verify_transaction
 from blockchain.blockchain import Block, bits_to_target, serialize_transaction,scriptpubkey_to_address, read_varint, parse_tx, validate_pow
 from state.state import blockchain, state_lock, pending_transactions
@@ -191,7 +191,7 @@ async def submit_block(request: Request, data: str) -> dict:
                 output_receiver = output_["receiver"]
                 output_amount = output_["amount"]
                 output_spent = output_["spent"]
-                if output_receiver in (to_, ADMIN_ADDRESS, TREASURY_ADDRESS):
+                if output_receiver in (to_, ADMIN_ADDRESS):
                     total_required += Decimal(output_amount)
                 else:
                     raise HTTPException(status_code=400, detail="Output receiver is invalid")

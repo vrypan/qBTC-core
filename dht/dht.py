@@ -334,7 +334,7 @@ async def push_blocks(peer_ip, peer_port):
                         for output_ in outputs:
                             output_receiver = output_.get("receiver")
                             output_amount = output_.get("amount", "0")
-                            if output_receiver in (to_, ADMIN_ADDRESS, TREASURY_ADDRESS):
+                            if output_receiver in (to_, ADMIN_ADDRESS):
                                 total_required += Decimal(output_amount)
                             else:
                                 print(f"❌ Hack detected! Unauthorized output to {output_receiver}")

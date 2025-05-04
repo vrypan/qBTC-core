@@ -129,11 +129,14 @@ class GossipNode:
                 block_hash = block.get("block_hash")
                 prev_hash = block.get("previous_hash")
 
+
                 if height != db_height + 1:
+                    print("Height mismatch")
                     logging.debug("Out-of-sequence block %s (height %s)", block_hash, height)
                     continue
 
                 if prev_hash != db_hash:
+                    print("tip mismatch")
                     logging.debug("Previous hash %s doesn’t match tip %s", prev_hash, db_hash)
                     continue
 

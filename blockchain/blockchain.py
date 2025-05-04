@@ -4,7 +4,6 @@ import hashlib
 import base58
 import json
 # Blockchain state 
-TREASURY_ADDRESS = "bqs1GPSETB9KzXeYWHfs2zMGPv5VKhLTPSvhm"
 GENESIS_ADDRESS = "bqs1genesis00000000000000000000000000000000"
 ADMIN_ADDRESS = "bqs1HpmbeSd8nhRpq5zX5df91D3Xy8pSUovmV"
 BLOCK_TIME_TARGET = 10  # Target block time in seconds
