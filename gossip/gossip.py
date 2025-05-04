@@ -9,37 +9,16 @@ from config.config import DEFAULT_GOSSIP_PORT, VALIDATOR_ID, ROCKSDB_PATH
 from state.state import pending_transactions, mined_blocks
 from wallet.wallet import verify_transaction
 from database.database import get_db, get_current_height
+from blockchain.blockchain import sha256d, calculate_merkle_root
 from dht.dht import push_blocks
 from rocksdict import WriteBatch
 import hashlib
 
 GENESIS_HASH = "0" * 64
 MAX_LINE_BYTES = 30 * 1024 * 1024  
-# Blockchain state 
-GENESIS_ADDRESS = "bqs1genesis00000000000000000000000000000000"
-ADMIN_ADDRESS = "bqs1HpmbeSd8nhRpq5zX5df91D3Xy8pSUovmV"
 
 
-def sha256d(b: bytes) -> bytes:
-    return hashlib.sha256(hashlib.sha256(b).digest()).digest()
 
-def calculate_merkle_root(txids: list[str]) -> str:
-    if not txids:
-        return sha256d(b"").hex()
-    
-    hashes = [bytes.fromhex(txid)[::-1] for txid in txids]  # little-endian
-
-    while len(hashes) > 1:
-        if len(hashes) % 2 == 1:
-            hashes.append(hashes[-1])  # duplicate last if odd
-
-        new_hashes = []
-        for i in range(0, len(hashes), 2):
-            combined = hashes[i] + hashes[i + 1]
-            new_hashes.append(sha256d(combined))
-        hashes = new_hashes
-
-    return hashes[0][::-1].hex()  # return as hex, big-endian
 
 class GossipNode:
     def __init__(self, node_id, wallet=None, is_bootstrap=False, is_full_node=True):

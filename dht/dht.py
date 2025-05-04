@@ -3,22 +3,23 @@ import json
 import logging
 import aiohttp
 import time
+import socket
 from decimal import Decimal
 from kademlia.network import Server as KademliaServer
 from config.config import shutdown_event, VALIDATOR_ID, HEARTBEAT_INTERVAL, VALIDATOR_TIMEOUT, VALIDATORS_LIST_KEY, BOOTSTRAP_NODES, DEFAULT_GOSSIP_PORT
 from state.state import validator_keys, known_validators
+from blockchain.blockchain import calculate_merkle_root
 from database.database import get_db,get_current_height
-
 from wallet.wallet import verify_transaction
 
 kad_server = None
 
 async def get_external_ip():
-    global own_ip
-    async with aiohttp.ClientSession() as session:
-        async with session.get('https://api.ipify.org') as response:
-            own_ip = await response.text()
-            return own_ip
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("8.8.8.8", 80))
+    ip = s.getsockname()[0]
+    s.close()
+    return ip
 
 async def run_kad_server(port, bootstrap_addr=None, wallet=None, gossip_node=None):
     global kad_server
@@ -32,7 +33,7 @@ async def run_kad_server(port, bootstrap_addr=None, wallet=None, gossip_node=Non
     logging.info(f"Validator {VALIDATOR_ID} running DHT on port {port}")
     await register_validator_once()
     if wallet and gossip_node:
-        ip_address = "127.0.0.1" #if bootstrap_addr is None else await get_external_ip()
+        ip_address = await get_external_ip()
         await announce_gossip_port(wallet, ip=ip_address, port=DEFAULT_GOSSIP_PORT, gossip_node=gossip_node)
         #if bootstrap_addr:  # Only discover peers if not bootstrap
         #    await discover_peers_once(gossip_node)
@@ -50,7 +51,8 @@ async def register_validator_once():
 
 async def announce_gossip_port(wallet, ip="127.0.0.1", port=DEFAULT_GOSSIP_PORT, gossip_node=None, is_bootstrap=False):
     key = f"gossip_{VALIDATOR_ID}"
-    info = {"ip": ip, "port": port, "publicKey": wallet["publicKey"]}
+    #info = {"ip": ip, "port": port, "publicKey": wallet["publicKey"]}
+    info = {"ip": ip, "port": port}
     for _ in range(5):
         await kad_server.set(key, json.dumps(info))
         stored_value = await kad_server.get(key)
