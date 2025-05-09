@@ -178,19 +178,69 @@ def get_transactions(wallet_address: str, limit: int = 50):
 
 async def simulate_all_transactions():
     while True:
-        transactions = get_transactions("")
+        db = get_db()
         formatted = []
-        for tx in transactions:
-            formatted.append({
-                "id": tx["txid"], "hash": tx["txid"], "sender": tx["sender"],
-                "receiver": tx["receiver"], "amount": f"{Decimal(tx['amount']):.8f} qBTC",
-                "timestamp": datetime.fromtimestamp(tx["timestamp"] / 1000).isoformat(),  # Convert to ISO
-                "status": "confirmed"
-            })
-        update_data = {"type": "transaction_update", "transactions": formatted, "timestamp": datetime.now().isoformat()}
+
+        for key, value in db.items():
+            key_text = key.decode("utf-8")
+            if not key_text.startswith("utxo:"):
+                continue
+
+            try:
+                utxo = json.loads(value.decode("utf-8"))
+                txid = utxo["txid"]
+                sender = utxo["sender"]
+                receiver = utxo["receiver"]
+                amount = Decimal(utxo["amount"])
+
+                # Skip change outputs (self-to-self)
+                if sender == receiver:
+                    continue
+
+                # Skip mining rewards (no sender)
+                if sender == "":
+                    continue
+
+                # Get timestamp if available
+                tx_data_raw = db.get(f"tx:{txid}".encode())
+                if tx_data_raw:
+                    tx_data = json.loads(tx_data_raw.decode())
+                    ts = tx_data.get("timestamp", 0)
+                else:
+                    ts = 0
+
+                timestamp_iso = datetime.fromtimestamp(ts / 1000).isoformat() if ts else datetime.utcnow().isoformat()
+
+                formatted.append({
+                    "id": txid,
+                    "hash": txid,
+                    "sender": sender,
+                    "receiver": receiver,
+                    "amount": f"{amount:.8f} qBTC",
+                    "timestamp": timestamp_iso,
+                    "status": "confirmed",
+                    "_sort_ts": ts  # hidden field for sorting
+                })
+
+            except (json.JSONDecodeError, InvalidOperation, KeyError) as e:
+                print(f"Skipping bad UTXO: {e}")
+                continue
+
+        # Sort most recent first (descending by timestamp)
+        formatted.sort(key=lambda x: x["_sort_ts"], reverse=True)
+
+        # Remove internal sorting field
+        for tx in formatted:
+            tx.pop("_sort_ts", None)
+
+        update_data = {
+            "type": "transaction_update",
+            "transactions": formatted,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
         await websocket_manager.broadcast(update_data, "all_transactions")
         await asyncio.sleep(10)
-
 async def broadcast_to_websocket_clients(message: str):
     # Copy clients to avoid modifying set during iteration
     disconnected_clients = []
@@ -421,6 +471,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     if update_type == "combined_update" and wallet_address:
                         task = asyncio.create_task(simulate_combined_updates(wallet_address))
                         logging.debug(f"Started combined_updates task for {wallet_address}")
+
+                    if update_type == "all_transactions":
+                        task = asyncio.create_task(simulate_all_transactions())
+
                     elif update_type == "bridge" and wallet_address and data.get("bridge_address") and data.get("secret"):
                         asyncio.create_task(simulate_bridge_updates(wallet_address, data["bridge_address"], data["secret"]))
             except json.JSONDecodeError as e:
