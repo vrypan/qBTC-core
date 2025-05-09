@@ -89,6 +89,7 @@ async def get_block_template(data):
 
 
 async def submit_block(request: Request, data: str) -> dict:
+    print(data)
     gossip_client = request.app.state.gossip_client
     raw_block_hex = data["params"][0]
     raw = bytes.fromhex(raw_block_hex)
@@ -149,6 +150,7 @@ async def submit_block(request: Request, data: str) -> dict:
 
     offset += size
     blob = raw[offset:].decode('utf-8')
+
     decoder = json.JSONDecoder()
     pos     = 0
     while pos < len(blob):
