@@ -25,8 +25,8 @@ class GossipNode:
         self.node_id = node_id
         self.wallet = wallet
         self.seen_tx = set()
-        self.dht_peers = set()  # Persistent peers from DHT
-        self.client_peers = set()  # Temporary peers from incoming connections
+        self.dht_peers = set()  
+        self.client_peers = set()  
         self.failed_peers = {}
         self.server_task = None
         self.server = None
