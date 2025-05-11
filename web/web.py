@@ -311,22 +311,72 @@ async def simulate_l1_proofs_testnet():
         await websocket_manager.broadcast(update_data, "l1_proofs_testnet")
         await asyncio.sleep(10)
 
-async def simulate_bridge_updates(wallet_address: str, bridge_address: str, secret: str):
-    statuses = ["waiting", "confirmed", "exchanging", "sending", "complete"]
-    current_status_idx = 0
-    websocket_manager.create_bridge_session(wallet_address, "btc-to-bqs", bridge_address, secret)
-    while current_status_idx < len(statuses):
-        status = statuses[current_status_idx]
-        websocket_manager.update_bridge_status(wallet_address, bridge_address, status)
-        bridge_data = {
-            "type": "bridge_update", "bridge_address": bridge_address, "current_status": status,
-            "created_at": datetime.now().isoformat(),
-            "tx_hash": None if current_status_idx < 2 else f"0x{hashlib.sha256(bridge_address.encode()).hexdigest()}",
-            "timestamp": datetime.now().isoformat()
-        }
-        await websocket_manager.broadcast(bridge_data, "bridge", wallet_address)
-        current_status_idx += 1
-        await asyncio.sleep(10)
+async def simulate_bridge_updates(wallet_address, secret):
+    """
+    Simulate a backend process and send updates to the client for each step.
+    """
+    query = '''
+        SELECT *
+        FROM `bridge-btc-bqs`
+        WHERE secret = %s;
+    '''
+    statuses = ['waiting', 'confirmed', 'exchanging', 'sending', 'complete']
+    expiration_time = datetime.now() + timedelta(hours=2)
+    last_sent_status = None
+
+    while True:
+        try:
+            # Fetch the current status from the database
+            status = await db.query(query, (secret,))
+            
+            if not status:
+                current_status = "waiting"
+                created_at = datetime.now().isoformat()
+                bridge_address = None
+                tx_hash = None
+            else:
+                current_status = status[0].get("current_status", "waiting")
+                created_at = status[0].get("created_at", datetime.now().isoformat())
+                bridge_address = status[0].get("bridge_address")
+                tx_hash = status[0].get("tx_hash")
+
+            # Check for expiration
+            if current_status == "waiting" and datetime.now() >= expiration_time:
+                expiration_data = {
+                    "current_status": "expired",
+                    "message": "No deposit received within 2 hours"
+                }
+                await websocket_manager.broadcast(
+                    expiration_data,
+                    update_type="bridge",
+                    wallet_address=wallet_address,
+                )
+                return  # Exit the loop after expiration
+
+            # Send status updates if status changes
+            if current_status and current_status != last_sent_status:
+                bridge_data = {
+                    "type": "bridge_update",
+                    "bridge_address": bridge_address,
+                    "current_status": current_status,
+                    "created_at": created_at,
+                    "tx_hash": tx_hash,
+                    "timestamp": datetime.now().isoformat(),
+                }
+
+                await websocket_manager.broadcast(
+                    bridge_data,
+                    update_type="bridge",
+                    wallet_address=wallet_address,
+                )
+                last_sent_status = current_status
+
+            # Wait for 10 seconds before checking again
+            await asyncio.sleep(10)
+
+        except Exception as e:
+            print(f"Error in simulate_bridge_updates for wallet {wallet_address}: {e}")
+            break
 
 def generate_bridge_address(wallet_address: str, network: str, direction: str) -> tuple:
     seed = f"{wallet_address}_{network}_{direction}_{int(time.time())}"
@@ -348,12 +398,13 @@ async def get_transactions_endpoint(wallet_address: str, limit: int = 50):
     return {"wallet_address": wallet_address, "transactions": transactions}
 
 @app.get("/health")
-async def health_check():
+async def health_check(request: Request):
     db = get_db()
+    gossip_client = request.app.state.gossip_client  
     return {
         "status": "healthy",
-        "height": get_current_height(db),
-        "peers": len(gossip_client.peers) if gossip_client else 0,
+        "height": get_current_height(db)[0],
+        "peers": len(gossip_client.client_peers) if gossip_client else 0,
         "pending_txs": len(pending_transactions)
     }
 
@@ -476,7 +527,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         task = asyncio.create_task(simulate_all_transactions())
 
                     elif update_type == "bridge" and wallet_address and data.get("bridge_address") and data.get("secret"):
-                        asyncio.create_task(simulate_bridge_updates(wallet_address, data["bridge_address"], data["secret"]))
+                        asyncio.create_task(simulate_bridge_updates(wallet_address, data["secret"]))
             except json.JSONDecodeError as e:
                 logging.warning(f"Invalid JSON received: {e}")
                 await websocket.send_json({"error": "Invalid JSON", "message": str(e)})
