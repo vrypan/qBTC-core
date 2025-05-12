@@ -7,7 +7,8 @@ from typing import Dict, List, Set, Optional
 from decimal import Decimal
 from config.config import ADMIN_ADDRESS
 from wallet.wallet import verify_transaction
-from blockchain.blockchain import Block, bits_to_target, serialize_transaction,scriptpubkey_to_address, read_varint, parse_tx, validate_pow, sha256d, calculate_merkle_root
+from blockchain.blockchain import  Block, bits_to_target, serialize_transaction,scriptpubkey_to_address, read_varint, parse_tx, validate_pow, sha256d, calculate_merkle_root
+from blockchain.protobuf_class import  Input, Output, TxBody, Transaction 
 from state.state import blockchain, state_lock, pending_transactions
 from rocksdict import WriteBatch
 import asyncio
@@ -36,31 +37,36 @@ async def rpc_handler(request: Request):
 
 
 async def get_block_template(data):
-    print(data)
     db = get_db()
     timestamp = int(time.time())
     height, previous_block_hash = get_current_height(db)
     transactions = []
-    txids = [] 
-
-    #if (len(pending_transactions.values()) == 0):
-    #    return "bcdadsfasdf"
-
-
+    txids = []
+    blob = b""
     for orig_tx in pending_transactions.values():
         tx = copy.deepcopy(orig_tx)
-        txid = tx["txid"]
-        if "txid" in tx:
-            del tx["txid"]
-        for output in tx.get("outputs", []):
-            output.pop("txid", None)
+        txid = tx.txid
+
+        # Remove txid from transaction and outputs for template serialization
+        tx.ClearField("txid")
+        for output in tx.outputs:
+            output.ClearField("txid")
+
+        print("I'm before serialize_transaction")
+
         raw_tx = serialize_transaction(tx)
+        blob += len(raw_tx).to_bytes(4, byteorder="big") + raw_tx
+
+        print("I'm after serialize_transaction")
+
         transactions.append({
-            "data": raw_tx,  
+            "data": blob,
             "txid": txid
         })
-        txids.append(txid) 
+        txids.append(txid)
 
+
+    print(transactions)
 
     block_template = {
         "version": 1,
@@ -78,6 +84,9 @@ async def get_block_template(data):
         "longpollid": "mockid",
     }
 
+    print(block_template)
+
+
     return {
         "result": block_template,
         "error": None,
@@ -87,9 +96,7 @@ async def get_block_template(data):
 
 
 
-
 async def submit_block(request: Request, data: str) -> dict:
-    print(data)
     gossip_client = request.app.state.gossip_client
     raw_block_hex = data["params"][0]
     raw = bytes.fromhex(raw_block_hex)
@@ -149,16 +156,46 @@ async def submit_block(request: Request, data: str) -> dict:
     #
 
     offset += size
-    blob = raw[offset:].decode('utf-8')
+    blob = raw[offset:] #.decode('utf-8')
 
-    decoder = json.JSONDecoder()
-    pos     = 0
-    while pos < len(blob):
-        obj, next_pos = decoder.raw_decode(blob, pos)
-        tx_list.append(obj)
-        pos = next_pos
-        while pos < len(blob) and blob[pos] in ' \t\r\n,':
-            pos += 1
+    print("**** IM NOW AT BLOB")
+
+ 
+    pos = 0
+    while pos + 4 <= len(blob):  
+        tx_len = int.from_bytes(blob[pos:pos+4], byteorder='big')
+        pos += 4
+        if pos + tx_len > len(blob):
+            print(f"Invalid tx length at pos {pos}")
+            break
+
+        tx_data = blob[pos:pos+tx_len]
+        pos += tx_len
+
+        try:
+            tx = Transaction()
+            tx.ParseFromString(tx_data)
+            txids.append(tx.txid)
+            transactions.append(tx)
+            batch.put(f"tx:{tx.txid}".encode(), tx.SerializeToString())
+        except Exception as e:
+            print(f"❌ Failed to parse transaction: {e}")
+            break
+
+
+
+    print(transactions)
+
+
+
+    #decoder = json.JSONDecoder()
+    #pos     = 0
+    #while pos < len(blob):
+    #    obj, next_pos = decoder.raw_decode(blob, pos)
+    #    tx_list.append(obj)
+    #    pos = next_pos
+    #    while pos < len(blob) and blob[pos] in ' \t\r\n,':
+    #        pos += 1
   
 
 

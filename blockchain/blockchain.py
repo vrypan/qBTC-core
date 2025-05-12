@@ -1,5 +1,6 @@
 import struct
 from config.config import ADMIN_ADDRESS,GENESIS_ADDRESS, DIFFICULTY_ADJUSTMENT_INTERVAL, BLOCK_TIME_TARGET
+from blockchain.protobuf_class import Transaction
 import hashlib
 import base58
 import json
@@ -57,24 +58,26 @@ class Block:
     def hash(self):
         return sha256d(self.header())[::-1].hex()
 
+def serialize_transaction(transaction: Transaction) -> bytes:
+    return transaction.SerializeToString()
 
+def deserialize_transaction(hex_str: str) -> Transaction:
+    tx = Transaction()
+    tx.ParseFromString(bytes.fromhex(hex_str))
+    return tx
 
+#def serialize_transaction(tx: dict) -> str:
+#    tx_data = json.dumps(tx, sort_keys=True)
+#    return tx_data.encode().hex()
 
-
-
-
-def serialize_transaction(tx: dict) -> str:
-    tx_data = json.dumps(tx, sort_keys=True)
-    return tx_data.encode().hex()
-
-def deserialize_transaction(raw_tx: str) -> dict:
-    try:
-        tx_bytes = bytes.fromhex(raw_tx)
-        tx_json = tx_bytes.decode()
-        tx_dict = json.loads(tx_json)
-        return tx_dict
-    except (ValueError, json.JSONDecodeError) as e:
-        raise ValueError(f"Failed to deserialize transaction: {e}")
+#def deserialize_transaction(raw_tx: str) -> dict:
+#    try:
+#        tx_bytes = bytes.fromhex(raw_tx)
+#        tx_json = tx_bytes.decode()
+#        tx_dict = json.loads(tx_json)
+#        return tx_dict
+#    except (ValueError, json.JSONDecodeError) as e:
+#        raise ValueError(f"Failed to deserialize transaction: {e}")
 
 
 

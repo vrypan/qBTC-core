@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from datetime import datetime
 from gossip.gossip import sha256d
 from blockchain.blockchain import serialize_transaction
+from blockchain.protobuf_class import Input,Output,TxBody,Transaction,Block
 from state.state import pending_transactions
 import logging
 import json
@@ -401,10 +402,12 @@ async def get_transactions_endpoint(wallet_address: str, limit: int = 50):
 async def health_check(request: Request):
     db = get_db()
     gossip_client = request.app.state.gossip_client  
+    print("DHT peers:", gossip_client.dht_peers)
+    print("Client peers:", gossip_client.client_peers)
     return {
         "status": "healthy",
         "height": get_current_height(db)[0],
-        "peers": len(gossip_client.client_peers) if gossip_client else 0,
+        "peers": len(gossip_client.dht_peers | gossip_client.client_peers),
         "pending_txs": len(pending_transactions)
     }
 
@@ -414,8 +417,8 @@ async def worker_endpoint(request: Request):
     gossip_client = request.app.state.gossip_client  
 
     payload = await request.json()
-
     if payload.get("request_type") == "broadcast_tx":
+
         message_bytes = base64.b64decode(payload["message"])
         signature_bytes = base64.b64decode(payload["signature"])
         pubkey_bytes = base64.b64decode(payload["pubkey"])
@@ -425,7 +428,7 @@ async def worker_endpoint(request: Request):
         parts = message_str.split(":")
         sender_, receiver_, send_amount = parts[0], parts[1], parts[2]
         nonce = parts[3] if len(parts) > 3 else str(int(time.time() * 1000))
-        
+
         if not verify_transaction(message_str, signature_hex, pubkey_hex):
             return {"status": "error", "message": "Invalid signature"}
 
@@ -435,20 +438,20 @@ async def worker_endpoint(request: Request):
             if key.startswith(b"utxo:"):
                 utxo_data = json.loads(value.decode())
                 if utxo_data["receiver"] == sender_ and not utxo_data["spent"]:
-                    amount_decimal = Decimal(str(utxo_data.get("amount")))
-                    inputs.append({
-                        "txid": utxo_data.get("txid"),
-                        "utxo_index": utxo_data.get("utxo_index"),
-                        "sender": utxo_data.get("sender"),
-                        "receiver": utxo_data.get("receiver"),
-                        "amount": str(amount_decimal),
-                        "spent": False
-                    })
+                    amount_decimal = Decimal(str(utxo_data["amount"]))
+                    inputs.append(Input(
+                        txid=utxo_data["txid"],
+                        utxo_index=int(utxo_data["utxo_index"]),
+                        sender=utxo_data["sender"],
+                        receiver=utxo_data["receiver"],
+                        amount=str(amount_decimal),
+                        spent=False
+                    ))
                     total_available += amount_decimal
 
         miner_fee = (Decimal(send_amount) * Decimal("0.001")).quantize(Decimal("0.00000001"))
-        total_required = Decimal(send_amount) + Decimal(miner_fee)
-        
+        total_required = Decimal(send_amount) + miner_fee
+
         if total_available < total_required:
             return {
                 "status": "error",
@@ -456,40 +459,51 @@ async def worker_endpoint(request: Request):
             }
 
         outputs = [
-            {"utxo_index": 0, "sender": sender_, "receiver": receiver_, "amount": str(send_amount), "spent": False},
+            Output(
+                utxo_index=0,
+                sender=sender_,
+                receiver=receiver_,
+                amount=str(send_amount),
+                spent=False
+            )
         ]
 
         change = total_available - total_required
         if change > 0:
-            outputs.insert(1, {
-                "utxo_index": 1, "sender": sender_, "receiver": sender_, "amount": str(change), "spent": False
-            })
+            outputs.append(Output(
+                utxo_index=1,
+                sender=sender_,
+                receiver=sender_,
+                amount=str(change),
+                spent=False
+            ))
 
-        transaction = {
-            "type": "transaction",
-            "inputs": inputs,
-            "outputs": outputs,
-            "body": {
-                "msg_str": message_str,
-                "pubkey": pubkey_hex,
-                "signature": signature_hex
-            },
-            "timestamp": int(time.time() * 1000)
-        }
+        body = TxBody(
+            msg_str=message_str,
+            pubkey=pubkey_hex,
+            signature=signature_hex
+        )
 
-        raw_tx = serialize_transaction(transaction)
-        txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex() 
-        transaction["txid"] = txid
-        for output in transaction["outputs"]:
-            output["txid"] = txid
+        transaction = Transaction(
+            inputs=inputs,
+            outputs=outputs,
+            body=body,
+            timestamp=int(time.time() * 1000)
+        )
+
+        raw_tx = transaction.SerializeToString()
+        txid = sha256d(raw_tx)[::-1].hex()
+        transaction.txid = txid
+        for i, output in enumerate(transaction.outputs):
+            output.txid = txid
+            output.utxo_index = i
+
         pending_transactions[txid] = transaction
-        db.put(b"tx:" + txid.encode(), json.dumps(transaction).encode())
+        db.put(b"tx:" + txid.encode(), transaction.SerializeToString())
 
         await gossip_client.randomized_broadcast(transaction)
 
         return {"status": "success", "message": "Transaction broadcast successfully", "tx_id": txid}
-
-    return {"status": "error", "message": "Unsupported request type"}
 
 
     if payload.get("request_type") == "get_bridge_address":
