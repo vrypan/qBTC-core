@@ -87,6 +87,8 @@ async def get_block_template(data):
 
 
 async def submit_block(request: Request, data: str) -> dict:
+
+    print(data)
     gossip_client = request.app.state.gossip_client
     raw_block_hex = data["params"][0]
     raw = bytes.fromhex(raw_block_hex)
@@ -169,20 +171,29 @@ async def submit_block(request: Request, data: str) -> dict:
     for tx in transactions:
         raw_tx = serialize_transaction(tx)
         txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex()
-
-        print(raw_tx)
+        txids.append(txid)
         print(txid)
 
+        print(tx.inputs)
+
+        print(tx.outputs)
+
+        print(tx.body.msg_str)
+
+        print(tx.body.pubkey)
+
+        print(tx.body.signature)
+
+        message_str = tx.body.msg_str
+        signature = tx.body.signature
+        pubkey = tx.body.pubkey
+
+        if(verify_transaction(message_str, signature, pubkey) == True):
+
+            print("**** IT WORKED ****")
 
 
-    #decoder = json.JSONDecoder()
-    #pos     = 0
-    #while pos < len(blob):
-    #    obj, next_pos = decoder.raw_decode(blob, pos)
-    #    tx_list.append(obj)
-    #    pos = next_pos
-    #    while pos < len(blob) and blob[pos] in ' \t\r\n,':
-    #        pos += 1
+
   
 
 
