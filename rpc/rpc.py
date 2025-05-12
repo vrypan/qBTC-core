@@ -41,8 +41,9 @@ async def get_block_template(data):
     timestamp = int(time.time())
     height, previous_block_hash = get_current_height(db)
     transactions = []
+    raw_tx = ""
     txids = []
-    blob = b""
+
     for orig_tx in pending_transactions.values():
         tx = copy.deepcopy(orig_tx)
         txid = tx.txid
@@ -52,21 +53,10 @@ async def get_block_template(data):
         for output in tx.outputs:
             output.ClearField("txid")
 
-        print("I'm before serialize_transaction")
 
-        raw_tx = serialize_transaction(tx)
-        blob += len(raw_tx).to_bytes(4, byteorder="big") + raw_tx
+        raw_tx += serialize_transaction(tx) + "7c7c"
 
-        print("I'm after serialize_transaction")
-
-        transactions.append({
-            "data": blob,
-            "txid": txid
-        })
         txids.append(txid)
-
-
-    print(transactions)
 
     block_template = {
         "version": 1,
@@ -80,12 +70,12 @@ async def get_block_template(data):
         "capabilities": ["proposal"],
         "coinbaseaux": {},
         "coinbasevalue": 5000000000,
-        "transactions": transactions,
+        "transactions": [{
+            "data": raw_tx,  # return hex-encoded blob
+            "txids": txids
+        }],
         "longpollid": "mockid",
     }
-
-    print(block_template)
-
 
     return {
         "result": block_template,
@@ -160,27 +150,17 @@ async def submit_block(request: Request, data: str) -> dict:
 
     print("**** IM NOW AT BLOB")
 
+
  
-    pos = 0
-    while pos + 4 <= len(blob):  
-        tx_len = int.from_bytes(blob[pos:pos+4], byteorder='big')
-        pos += 4
-        if pos + tx_len > len(blob):
-            print(f"Invalid tx length at pos {pos}")
-            break
+    segments = blob.hex().split("7c7c")
+    for segment in segments:
+        if not segment.strip():
+            continue
+        tx_bytes = bytes.fromhex(segment)
+        tx = Transaction()
+        tx.ParseFromString(tx_bytes)
+        transactions.append(tx)
 
-        tx_data = blob[pos:pos+tx_len]
-        pos += tx_len
-
-        try:
-            tx = Transaction()
-            tx.ParseFromString(tx_data)
-            txids.append(tx.txid)
-            transactions.append(tx)
-            batch.put(f"tx:{tx.txid}".encode(), tx.SerializeToString())
-        except Exception as e:
-            print(f"❌ Failed to parse transaction: {e}")
-            break
 
 
 

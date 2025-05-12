@@ -58,8 +58,8 @@ class Block:
     def hash(self):
         return sha256d(self.header())[::-1].hex()
 
-def serialize_transaction(transaction: Transaction) -> bytes:
-    return transaction.SerializeToString()
+def serialize_transaction(transaction: Transaction) -> str:
+    return transaction.SerializeToString().hex()
 
 def deserialize_transaction(hex_str: str) -> Transaction:
     tx = Transaction()
