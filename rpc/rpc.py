@@ -54,7 +54,7 @@ async def get_block_template(data):
             output.ClearField("txid")
 
 
-        raw_tx += serialize_transaction(tx) + "7c7c"
+        raw_tx += serialize_transaction(tx) + "7c7c" #using || as a tx delimiter for tx frames
 
         txids.append(txid)
 
@@ -165,6 +165,13 @@ async def submit_block(request: Request, data: str) -> dict:
 
 
     print(transactions)
+
+    for tx in transactions:
+        raw_tx = serialize_transaction(tx)
+        txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex()
+
+        print(raw_tx)
+        print(txid)
 
 
 
