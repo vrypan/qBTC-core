@@ -141,7 +141,7 @@ async def submit_block(request: Request, data: str) -> dict:
     print(f"****** COINBASE TXID: {coinbase_txid}")
     txids.append(coinbase_txid)
 
-    batch.put(b"tx:" + coinbase_txid.encode(), json.dumps(coinbase_tx).encode())
+    #batch.put(b"tx:" + coinbase_txid.encode(), json.dumps(coinbase_tx).encode())
 
     #
     # Add mapping to quantum safe miner address here through endpoint 
@@ -151,7 +151,6 @@ async def submit_block(request: Request, data: str) -> dict:
     blob = raw[offset:] #.decode('utf-8')
 
     print("**** IM NOW AT BLOB")
-
 
  
     segments = blob.hex().split("7c7c")
@@ -164,33 +163,105 @@ async def submit_block(request: Request, data: str) -> dict:
         transactions.append(tx)
 
 
-
-
-    print(transactions)
-
     for tx in transactions:
         raw_tx = serialize_transaction(tx)
         txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex()
         txids.append(txid)
-        print(txid)
-
-        print(tx.inputs)
-
-        print(tx.outputs)
-
-        print(tx.body.msg_str)
-
-        print(tx.body.pubkey)
-
-        print(tx.body.signature)
 
         message_str = tx.body.msg_str
         signature = tx.body.signature
         pubkey = tx.body.pubkey
 
         if(verify_transaction(message_str, signature, pubkey) == True):
+            from_ = message_str.split(":")[0]
+            to_ = message_str.split(":")[1]
+            amount_ = message_str.split(":")[2]
 
-            print("**** IT WORKED ****")
+            total_amount = Decimal(0)
+            spent_keys = []
+  
+            for input_ in tx.inputs:
+                input_txid = input_.txid
+                input_utxo_index = input_.utxo_index
+                print(f"Input txid is {input_txid}")
+                utxo_key = f"utxo:{input_txid}:{input_utxo_index}".encode()
+                if utxo_key in db:
+                    db_output = Output() 
+                    db_output.ParseFromString(db.get(utxo_key))
+                    if (db_output.receiver == from_):
+                       if (db_output.spent == False):
+                        total_amount = Decimal(total_amount) + Decimal(db_output.amount)
+                        spent_keys.append((utxo_key,db_output))
+
+            if (Decimal(amount_) > total_amount):
+                return {"status": "error", "message": "Insufficient funds"}
+
+            for utxo_key,output in spent_keys:
+                output.spent = True
+                batch.put(utxo_key,output.SerializeToString())
+
+
+            outputs = []
+
+            # Primary payment
+            outputs.append(Output(
+                utxo_index=0,
+                sender=from_,
+                receiver=to_,
+                amount=str(amount_),
+                spent=False
+            ))
+
+            # Change if applicable
+            change = Decimal(total_amount) - Decimal(amount_)
+            if change > 0:
+                outputs.append(Output(
+                    utxo_index=1,
+                    sender=from_,
+                    receiver=from_,
+                    amount=str(change),
+                    spent=False
+                ))
+
+
+            raw_tx = serialize_transaction(tx)
+            txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex()
+            txids.append(txid)
+
+
+            print(txid)
+
+            print(outputs)
+
+            # Assign txid to outputs
+            raw_tx = serialize_transaction(tx)
+            txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex()
+            txids.append(txid)
+
+            for i, output in enumerate(outputs):
+                output.txid = txid
+                output.utxo_index = i
+                utxo_key = f"utxo:{txid}:{i}".encode()
+                batch.put(utxo_key, output.SerializeToString())
+
+
+
+    calculated_merkle = calculate_merkle_root(txids)
+    if calculated_merkle != merkle_root_block:
+        raise HTTPException(400, "Merkle root mismatch")
+
+    print("****** MERKLE HEADERS MATCH")
+
+
+
+
+
+
+
+
+
+
+                   
 
 
 

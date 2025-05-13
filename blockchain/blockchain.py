@@ -1,6 +1,6 @@
 import struct
 from config.config import ADMIN_ADDRESS,GENESIS_ADDRESS, DIFFICULTY_ADJUSTMENT_INTERVAL, BLOCK_TIME_TARGET
-from blockchain.protobuf_class import Transaction
+from blockchain.protobuf_class import Transaction, Block
 import hashlib
 import base58
 import json
@@ -57,6 +57,9 @@ class Block:
 
     def hash(self):
         return sha256d(self.header())[::-1].hex()
+
+def serialize_block(Block: Block) -> str:
+    return Block.SerializeToString().hex()
 
 def serialize_transaction(transaction: Transaction) -> str:
     return transaction.SerializeToString().hex()

@@ -33,15 +33,18 @@ message Transaction {
 }
 
 message Block {
-  uint32 version = 1;
-  string previous_hash = 2;
-  string block_hash = 3;
-  string merkle_root = 4;
-  uint64 timestamp = 5;
-  uint32 bits = 6;
-  uint32 nonce = 7;
-  string miner_address = 8;
-  repeated string tx_ids = 9;
-  repeated Transaction full_transactions = 10;
+  uint32 height = 1;
+  uint32 version = 2;
+  string previous_hash = 3;
+  string block_hash = 4;
+  string merkle_root = 5;
+  uint64 timestamp = 6;
+  uint32 bits = 7;
+  uint32 nonce = 8;
+  string miner_address = 9;
+  repeated string tx_ids = 10;
+  repeated Transaction full_transactions = 11;
 }
+
+
 

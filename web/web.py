@@ -419,9 +419,11 @@ async def worker_endpoint(request: Request):
     payload = await request.json()
     if payload.get("request_type") == "broadcast_tx":
 
+        # Step 1: Decode and validate
         message_bytes = base64.b64decode(payload["message"])
         signature_bytes = base64.b64decode(payload["signature"])
         pubkey_bytes = base64.b64decode(payload["pubkey"])
+
         signature_hex = signature_bytes.hex()
         pubkey_hex = pubkey_bytes.hex()
         message_str = message_bytes.decode("utf-8")
@@ -432,23 +434,28 @@ async def worker_endpoint(request: Request):
         if not verify_transaction(message_str, signature_hex, pubkey_hex):
             return {"status": "error", "message": "Invalid signature"}
 
+        # Step 2: Gather unspent UTXOs
         inputs = []
         total_available = Decimal("0")
         for key, value in db.items():
             if key.startswith(b"utxo:"):
-                utxo_data = json.loads(value.decode())
-                if utxo_data["receiver"] == sender_ and not utxo_data["spent"]:
-                    amount_decimal = Decimal(str(utxo_data["amount"]))
+                utxo_output = Output()
+                utxo_output.ParseFromString(value)
+
+                print(utxo_output)
+
+                if utxo_output.receiver == sender_ and not utxo_output.spent:
                     inputs.append(Input(
-                        txid=utxo_data["txid"],
-                        utxo_index=int(utxo_data["utxo_index"]),
-                        sender=utxo_data["sender"],
-                        receiver=utxo_data["receiver"],
-                        amount=str(amount_decimal),
+                        txid=utxo_output.txid,
+                        utxo_index=utxo_output.utxo_index,
+                        sender=utxo_output.sender,
+                        receiver=utxo_output.receiver,
+                        amount=utxo_output.amount,
                         spent=False
                     ))
-                    total_available += amount_decimal
+                    total_available += Decimal(utxo_output.amount)
 
+        # Step 3: Validate balance
         miner_fee = (Decimal(send_amount) * Decimal("0.001")).quantize(Decimal("0.00000001"))
         total_required = Decimal(send_amount) + miner_fee
 
@@ -458,6 +465,7 @@ async def worker_endpoint(request: Request):
                 "message": f"Insufficient funds: Need {total_required}, have {total_available}"
             }
 
+        # Step 4: Build outputs
         outputs = [
             Output(
                 utxo_index=0,
@@ -478,28 +486,21 @@ async def worker_endpoint(request: Request):
                 spent=False
             ))
 
-        body = TxBody(
-            msg_str=message_str,
-            pubkey=pubkey_hex,
-            signature=signature_hex
-        )
-
-        transaction = Transaction(
-            inputs=inputs,
-            outputs=outputs,
-            body=body,
-            timestamp=int(time.time() * 1000)
-        )
+        # Step 5: Build full transaction
+        body = TxBody(msg_str=message_str, pubkey=pubkey_hex, signature=signature_hex)
+        transaction = Transaction(inputs=inputs, outputs=outputs, body=body, timestamp=int(time.time() * 1000))
 
         raw_tx = transaction.SerializeToString()
         txid = sha256d(raw_tx)[::-1].hex()
         transaction.txid = txid
+
         for i, output in enumerate(transaction.outputs):
             output.txid = txid
             output.utxo_index = i
 
+        # Step 6: Store and broadcast
         pending_transactions[txid] = transaction
-        db.put(b"tx:" + txid.encode(), transaction.SerializeToString())
+        db.put(b"tx:" + txid.encode(), raw_tx)
 
         await gossip_client.randomized_broadcast(transaction)
 
