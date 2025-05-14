@@ -166,6 +166,7 @@ async def submit_block(request: Request, data: str) -> dict:
     for tx in transactions:
         raw_tx = serialize_transaction(tx)
         txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex()
+        print(f"***** {txid}")
         txids.append(txid)
 
         message_str = tx.body.msg_str
@@ -224,19 +225,12 @@ async def submit_block(request: Request, data: str) -> dict:
                 ))
 
 
-            raw_tx = serialize_transaction(tx)
-            txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex()
-            txids.append(txid)
+            print(txids)
 
-
-            print(txid)
+            print("outputs are")
 
             print(outputs)
 
-            # Assign txid to outputs
-            raw_tx = serialize_transaction(tx)
-            txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex()
-            txids.append(txid)
 
             for i, output in enumerate(outputs):
                 output.txid = txid
@@ -247,6 +241,9 @@ async def submit_block(request: Request, data: str) -> dict:
 
 
     calculated_merkle = calculate_merkle_root(txids)
+
+    print(merkle_root_block)
+    print(f"calculated merkle is {calculated_merkle}")
     if calculated_merkle != merkle_root_block:
         raise HTTPException(400, "Merkle root mismatch")
 
