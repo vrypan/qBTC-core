@@ -30,6 +30,7 @@ message Transaction {
   repeated Output outputs = 3;
   TxBody body = 4;
   uint64 timestamp = 5;
+  string raw = 99;
 }
 
 message Block {

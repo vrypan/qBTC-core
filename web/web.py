@@ -442,8 +442,6 @@ async def worker_endpoint(request: Request):
                 utxo_output = Output()
                 utxo_output.ParseFromString(value)
 
-                print(utxo_output)
-
                 if utxo_output.receiver == sender_ and not utxo_output.spent:
                     inputs.append(Input(
                         txid=utxo_output.txid,
@@ -490,9 +488,11 @@ async def worker_endpoint(request: Request):
         body = TxBody(msg_str=message_str, pubkey=pubkey_hex, signature=signature_hex)
         transaction = Transaction(inputs=inputs, outputs=outputs, body=body, timestamp=int(time.time() * 1000))
 
+        # Serialize once and compute txid
         raw_tx = transaction.SerializeToString()
         txid = sha256d(raw_tx)[::-1].hex()
         transaction.txid = txid
+        transaction.raw = raw_tx.hex()  # Store raw bytes as hex string
 
         for i, output in enumerate(transaction.outputs):
             output.txid = txid
@@ -500,11 +500,15 @@ async def worker_endpoint(request: Request):
 
         # Step 6: Store and broadcast
         pending_transactions[txid] = transaction
-        db.put(b"tx:" + txid.encode(), raw_tx)
+        #db.put(b"tx:" + txid.encode(), raw_tx)
 
         await gossip_client.randomized_broadcast(transaction)
 
-        return {"status": "success", "message": "Transaction broadcast successfully", "tx_id": txid}
+        return {
+            "status": "success",
+            "message": "Transaction broadcast successfully",
+            "tx_id": txid
+        }
 
 
     if payload.get("request_type") == "get_bridge_address":

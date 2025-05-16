@@ -7,10 +7,11 @@ from typing import Dict, List, Set, Optional
 from decimal import Decimal
 from config.config import ADMIN_ADDRESS
 from wallet.wallet import verify_transaction
-from blockchain.blockchain import  Block, bits_to_target, serialize_transaction,scriptpubkey_to_address, read_varint, parse_tx, validate_pow, sha256d, calculate_merkle_root
+from blockchain.blockchain import  derive_qsafe_address, Block, bits_to_target, serialize_transaction,scriptpubkey_to_address, read_varint, parse_tx, validate_pow, sha256d, calculate_merkle_root
 from blockchain.protobuf_class import  Input, Output, TxBody, Transaction 
 from state.state import blockchain, state_lock, pending_transactions
 from rocksdict import WriteBatch
+import hashlib
 import asyncio
 import copy
 import time
@@ -40,27 +41,18 @@ async def get_block_template(data):
     db = get_db()
     timestamp = int(time.time())
     height, previous_block_hash = get_current_height(db)
-    transactions = []
-    raw_tx = ""
     txids = []
+    blob = ""
 
-    for orig_tx in pending_transactions.values():
-        tx = copy.deepcopy(orig_tx)
-        txid = tx.txid
+    # ---- Add pending transactions ----
+    for tx in pending_transactions.values():
+        blob += tx.raw + "7c7c"
+        txids.append(tx.txid)
 
-        # Remove txid from transaction and outputs for template serialization
-        tx.ClearField("txid")
-        for output in tx.outputs:
-            output.ClearField("txid")
-
-
-        raw_tx += serialize_transaction(tx) + "7c7c" #using || as a tx delimiter for tx frames
-
-        txids.append(txid)
 
     block_template = {
         "version": 1,
-        "previousblockhash": f"{previous_block_hash}",
+        "previousblockhash": previous_block_hash,
         "target": f"{bits_to_target(0x1f00ffff):064x}",
         "bits": f"{0x1f00ffff:08x}",
         "curtime": timestamp,
@@ -71,20 +63,18 @@ async def get_block_template(data):
         "coinbaseaux": {},
         "coinbasevalue": 5000000000,
         "transactions": [{
-            "data": raw_tx,  # return hex-encoded blob
-            "txids": txids
+            "data": blob,
+            "hash": txids  # still exclude coinbase
         }],
         "longpollid": "mockid",
     }
+
 
     return {
         "result": block_template,
         "error": None,
         "id": data["id"]
     }
-
-
-
 
 async def submit_block(request: Request, data: str) -> dict:
 
@@ -106,6 +96,13 @@ async def submit_block(request: Request, data: str) -> dict:
     nonce = struct.unpack_from('<I', hdr, 76)[0]
     block = Block(version, prev_block, merkle_root_block, timestamp, bits, nonce)
 
+    print(version)
+    print(prev_block)
+    print(merkle_root_block)
+    print(timestamp)
+    print(bits)
+    print(nonce)
+
     if not validate_pow(block):
         print("****** BLOCK VALIDATION FAILED ****")
         return
@@ -126,7 +123,6 @@ async def submit_block(request: Request, data: str) -> dict:
     if (timestamp > future_limit):
          raise HTTPException(400, "Block from the future")
 
-
     offset = 80
     tx_count, sz = read_varint(raw, offset)
     offset += sz
@@ -137,84 +133,80 @@ async def submit_block(request: Request, data: str) -> dict:
     coinbase_miner_address = scriptpubkey_to_address(coinbase_script_pubkey)
     print(f"****** COINBASE MINER ADDERSS {coinbase_miner_address}")
     coinbase_raw = raw[coinbase_start:coinbase_start + size]
-    coinbase_txid = sha256d(coinbase_raw)[::-1].hex() 
-    print(f"****** COINBASE TXID: {coinbase_txid}")
+    coinbase_txid = sha256d(coinbase_raw)[::-1].hex()
+    print(f"Coinbase raw hex: {coinbase_raw.hex()}")
+    print(f"Coinbase txid: {coinbase_txid}")
     txids.append(coinbase_txid)
 
-    #batch.put(b"tx:" + coinbase_txid.encode(), json.dumps(coinbase_tx).encode())
-
-    #
-    # Add mapping to quantum safe miner address here through endpoint 
-    #
-
+    print(f"****** COINBASE TXID: {coinbase_txid}")
+   
     offset += size
     blob = raw[offset:] #.decode('utf-8')
 
     print("**** IM NOW AT BLOB")
 
- 
     segments = blob.hex().split("7c7c")
     for segment in segments:
         if not segment.strip():
             continue
+
         tx_bytes = bytes.fromhex(segment)
+        txid = sha256d(tx_bytes)[::-1].hex()
         tx = Transaction()
         tx.ParseFromString(tx_bytes)
+        tx.raw = segment  # store the original raw tx for later if needed
         transactions.append(tx)
-
-
-    for tx in transactions:
-        raw_tx = serialize_transaction(tx)
-        txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex()
-        print(f"***** {txid}")
         txids.append(txid)
 
+        print(f"***** {txid}")
+
+        # -- signature check and state update --
         message_str = tx.body.msg_str
         signature = tx.body.signature
         pubkey = tx.body.pubkey
 
-        if(verify_transaction(message_str, signature, pubkey) == True):
+        if verify_transaction(message_str, signature, pubkey):
+            print("pubkey is")
+            print(pubkey)
+
             from_ = message_str.split(":")[0]
             to_ = message_str.split(":")[1]
             amount_ = message_str.split(":")[2]
 
+            assert derive_qsafe_address(pubkey) == from_, "Wrong signature"
+
             total_amount = Decimal(0)
             spent_keys = []
-  
+
             for input_ in tx.inputs:
                 input_txid = input_.txid
                 input_utxo_index = input_.utxo_index
                 print(f"Input txid is {input_txid}")
                 utxo_key = f"utxo:{input_txid}:{input_utxo_index}".encode()
                 if utxo_key in db:
-                    db_output = Output() 
+                    db_output = Output()
                     db_output.ParseFromString(db.get(utxo_key))
-                    if (db_output.receiver == from_):
-                       if (db_output.spent == False):
-                        total_amount = Decimal(total_amount) + Decimal(db_output.amount)
-                        spent_keys.append((utxo_key,db_output))
+                    if db_output.receiver == from_ and not db_output.spent:
+                        total_amount += Decimal(db_output.amount)
+                        spent_keys.append((utxo_key, db_output))
 
-            if (Decimal(amount_) > total_amount):
+            if Decimal(amount_) > total_amount:
                 return {"status": "error", "message": "Insufficient funds"}
 
-            for utxo_key,output in spent_keys:
+            for utxo_key, output in spent_keys:
                 output.spent = True
-                batch.put(utxo_key,output.SerializeToString())
+                batch.put(utxo_key, output.SerializeToString())
 
-
-            outputs = []
-
-            # Primary payment
-            outputs.append(Output(
+            # Build and store outputs
+            outputs = [Output(
                 utxo_index=0,
                 sender=from_,
                 receiver=to_,
                 amount=str(amount_),
                 spent=False
-            ))
+            )]
 
-            # Change if applicable
-            change = Decimal(total_amount) - Decimal(amount_)
+            change = total_amount - Decimal(amount_)
             if change > 0:
                 outputs.append(Output(
                     utxo_index=1,
@@ -223,14 +215,6 @@ async def submit_block(request: Request, data: str) -> dict:
                     amount=str(change),
                     spent=False
                 ))
-
-
-            print(txids)
-
-            print("outputs are")
-
-            print(outputs)
-
 
             for i, output in enumerate(outputs):
                 output.txid = txid
@@ -242,8 +226,8 @@ async def submit_block(request: Request, data: str) -> dict:
 
     calculated_merkle = calculate_merkle_root(txids)
 
-    print(merkle_root_block)
-    print(f"calculated merkle is {calculated_merkle}")
+    print(f"merkle_root_block is {merkle_root_block}")
+    calculated_merkle = print_merkle_debug(txids)
     if calculated_merkle != merkle_root_block:
         raise HTTPException(400, "Merkle root mismatch")
 
@@ -256,134 +240,34 @@ async def submit_block(request: Request, data: str) -> dict:
 
 
 
+def print_merkle_debug(txids: list[str]):
+    print("\n📦 Merkle Tree Debug:")
+    print("TXIDs used for Merkle Root Calculation:")
+    for i, txid in enumerate(txids):
+        print(f"  [{i}] {txid}")
 
+    def sha256d(b):
+        return hashlib.sha256(hashlib.sha256(b).digest()).digest()
 
-                   
+    hashes = [bytes.fromhex(t)[::-1] for t in txids]
+    level = 0
+    while len(hashes) > 1:
+        print(f"\n🧱 Level {level} ({len(hashes)} items):")
+        for i in range(0, len(hashes), 2):
+            left = hashes[i]
+            right = hashes[i] if i + 1 == len(hashes) else hashes[i + 1]
+            print(f"  Pair {i // 2}:")
+            print(f"    Left : {left[::-1].hex()}")
+            print(f"    Right: {right[::-1].hex()}")
+            combined = sha256d(left + right)
+            print(f"    Hash : {combined[::-1].hex()}")
+        # Next level
+        if len(hashes) % 2 == 1:
+            hashes.append(hashes[-1])
+        hashes = [sha256d(hashes[i] + hashes[i + 1]) for i in range(0, len(hashes), 2)]
+        level += 1
 
-
-
-  
-
-
-    for i, tx in enumerate(tx_list, start=1):
-        raw_tx = serialize_transaction(tx)
-        txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex()
-        txids.append(txid)
-        inputs = tx["inputs"]
-        print(f"****** INPUTS : {inputs}")
-        outputs = tx["outputs"]
-        message_str = tx["body"]["msg_str"]
-        pubkey = tx["body"]["pubkey"]
-        signature = tx["body"]["signature"]
-        if(verify_transaction(message_str, signature, pubkey) == True):
-            from_ = message_str.split(":")[0]
-            to_ = message_str.split(":")[1]
-            amount_ = message_str.split(":")[2]
-            total_available = Decimal(0)
-            total_required = Decimal(0)
-            total_authorised = Decimal(amount_)
-            for input_ in inputs:
-                input_txid = input_["txid"]
-                input_sender = input_["sender"]
-                input_receiver = input_["receiver"]
-                input_amount = input_["amount"]
-                input_spent = input_["spent"]
-                if (input_receiver == from_):
-                    if (input_spent == False):
-                        total_available += Decimal(input_amount)
-            for output_ in outputs:
-                output_sender = output_["sender"]
-                output_receiver = output_["receiver"]
-                output_amount = output_["amount"]
-                output_spent = output_["spent"]
-                if output_receiver in (to_, ADMIN_ADDRESS):
-                    total_required += Decimal(output_amount)
-                else:
-                    raise HTTPException(status_code=400, detail="Output receiver is invalid")
-            miner_fee = (Decimal(total_authorised) * Decimal("0.001")).quantize(Decimal("0.00000001"))
-            total_required = Decimal(total_authorised) + Decimal(miner_fee)
-            if (total_required <= total_available):
-                   # Spend inputs
-                for input_ in inputs:
-                    utxo_key = f"utxo:{input_['txid']}:{input_['utxo_index']}".encode()
-                    if utxo_key in db:
-                        print(f"****** Marking utxo {utxo_key} as spent")
-                        utxo_raw = db.get(utxo_key)
-                        if utxo_raw is None:
-                            raise HTTPException(400, "Input not found")
-                        utxo = json.loads(utxo_raw.decode())
-                        if utxo["spent"]:
-                            raise HTTPException(400, "Double-spend")
-                        utxo["spent"] = True
-                        batch.put(utxo_key, json.dumps(utxo).encode())
-                        print(f"****** Done marking {utxo_key} as spent")
-
-                # Create outputs
-                for output_ in outputs:
-                    utxo_key = f"utxo:{txid}:{output_['utxo_index']}".encode()
-                    utxo_value = {
-                        "txid": txid,
-                        "utxo_index": output_["utxo_index"],
-                        "sender": output_["sender"],
-                        "receiver": output_["receiver"],
-                        "amount": output_["amount"],
-                        "spent": False
-                    }
-                    batch.put(utxo_key, json.dumps(utxo_value).encode())
-                    print(f"****** Created UTXO {utxo_key} → {utxo_value}")
-
-                # Commit all changes atomically
-                #db.write(batch)
-                #del pending_transactions[txid]
-
-
-    calculated_merkle = calculate_merkle_root(txids)
-    if calculated_merkle != merkle_root_block:
-        raise HTTPException(400, "Merkle root mismatch")
-
-    print("****** MERKLE HEADERS MATCH")
-    block_data = {
-        "version": version,
-        "bits": bits,
-        "height": get_current_height(db)[0] + 1,
-        "block_hash": block.hash(),
-        "previous_hash": prev_block,
-        "tx_ids": txids,
-        "nonce": nonce,
-        "timestamp": timestamp,
-        "merkle_root": calculated_merkle,
-        "miner_address": coinbase_miner_address, 
-    }
-    batch.put(b"block:" + block.hash().encode(), json.dumps(block_data).encode())
-    db.write(batch)
-
-    for tid in txids[1:]:
-        pending_transactions.pop(tid, None)
-
-    async with state_lock:
-        blockchain.append(block.hash())
-    print(f"Block added: {block.hash()} with {len(tx_list)} transactions")
-
-    full_transactions = []
-    for tx_id in block_data.get("tx_ids", []):
-        tx_key = f"tx:{tx_id}".encode()
-        if tx_key in db:
-            tx_data = json.loads(db[tx_key].decode())
-            full_transactions.append(tx_data)
-
-
-    block_data["full_transactions"] = full_transactions
-
-
-    
-    block_gossip = {
-            "type": "blocks_response",
-            "blocks": block_data,
-            "timestamp": int(time.time() * 1000)
-    }
-
-    await gossip_client.randomized_broadcast(block_gossip)
-
-    return {"result": None, "error": None, "id": data["id"]}
-
+    final_merkle = hashes[0][::-1].hex()
+    print(f"\n✅ Final Merkle Root: {final_merkle}\n")
+    return final_merkle
 
