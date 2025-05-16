@@ -7,7 +7,7 @@ from typing import Dict, List, Set, Optional
 from decimal import Decimal
 from config.config import ADMIN_ADDRESS
 from wallet.wallet import verify_transaction
-from blockchain.blockchain import Block, bits_to_target, serialize_transaction,scriptpubkey_to_address, read_varint, parse_tx, validate_pow, sha256d, calculate_merkle_root
+from blockchain.blockchain import derive_qsafe_address,Block, bits_to_target, serialize_transaction,scriptpubkey_to_address, read_varint, parse_tx, validate_pow, sha256d, calculate_merkle_root
 from state.state import blockchain, state_lock, pending_transactions
 from rocksdict import WriteBatch
 import asyncio
@@ -75,7 +75,7 @@ async def get_block_template(data):
         "coinbaseaux": {},
         "coinbasevalue": 5000000000,
         "transactions": transactions,
-        "longpollid": "mockid",
+        "longpollid": previous_block_hash,
     }
 
     return {
@@ -85,7 +85,10 @@ async def get_block_template(data):
     }
 
 
-
+def rpc_error(code, msg, _id):
+    return {"result": None,
+            "error": {"code": code, "message": msg},
+            "id": _id}
 
 
 async def submit_block(request: Request, data: str) -> dict:
@@ -107,6 +110,9 @@ async def submit_block(request: Request, data: str) -> dict:
     nonce = struct.unpack_from('<I', hdr, 76)[0]
     block = Block(version, prev_block, merkle_root_block, timestamp, bits, nonce)
 
+    if block.hash() in blockchain:
+        return rpc_error(-2,"duplicate", data["id"])
+
     if not validate_pow(block):
         print("****** BLOCK VALIDATION FAILED ****")
         return
@@ -119,8 +125,10 @@ async def submit_block(request: Request, data: str) -> dict:
 
     print(f"Local height: {local_height}, Local tip: {local_tip}")
 
-    if (prev_block != local_tip):
-        raise HTTPException(400, "Forked too early / bad prev-hash")
+    if prev_block != local_tip:
+        if db.get(f"block:{prev_block}".encode()):      # we do know that block
+            return rpc_error(23, "stale", data["id"])   # ➜ miner refreshes template
+        return rpc_error(-1, "bad-prevblk", data["id"])
 
     future_limit = int(time.time()) + 2*60 # 2 mins in the future
 
@@ -142,7 +150,7 @@ async def submit_block(request: Request, data: str) -> dict:
     print(f"****** COINBASE TXID: {coinbase_txid}")
     txids.append(coinbase_txid)
 
-    batch.put(b"tx:" + coinbase_txid.encode(), json.dumps(coinbase_tx).encode())
+    #batch.put(b"tx:" + coinbase_txid.encode(), json.dumps(coinbase_tx).encode())
 
     #
     # Add mapping to quantum safe miner address here through endpoint 
@@ -173,12 +181,16 @@ async def submit_block(request: Request, data: str) -> dict:
         pubkey = tx["body"]["pubkey"]
         signature = tx["body"]["signature"]
         if(verify_transaction(message_str, signature, pubkey) == True):
+
             from_ = message_str.split(":")[0]
             to_ = message_str.split(":")[1]
             amount_ = message_str.split(":")[2]
             total_available = Decimal(0)
             total_required = Decimal(0)
             total_authorised = Decimal(amount_)
+
+            assert derive_qsafe_address(pubkey) == from_,"wrong signer"
+
             for input_ in inputs:
                 input_txid = input_["txid"]
                 input_sender = input_["sender"]

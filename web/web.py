@@ -483,7 +483,7 @@ async def worker_endpoint(request: Request):
         for output in transaction["outputs"]:
             output["txid"] = txid
         pending_transactions[txid] = transaction
-        db.put(b"tx:" + txid.encode(), json.dumps(transaction).encode())
+        #db.put(b"tx:" + txid.encode(), json.dumps(transaction).encode())
 
         await gossip_client.randomized_broadcast(transaction)
 

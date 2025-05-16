@@ -1,10 +1,16 @@
 # Byte-compiled / optimized / DLL files
+*.pyc
 __pycache__/
 *.py[cod]
 *$py.class
 
 # C extensions
 *.so
+
+node-modules/
+ledger.rocksdb/
+package.json
+package-lock.json
 
 # Distribution / packaging
 .Python
