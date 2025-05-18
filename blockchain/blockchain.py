@@ -1,8 +1,31 @@
 import struct
 from config.config import ADMIN_ADDRESS,GENESIS_ADDRESS, DIFFICULTY_ADJUSTMENT_INTERVAL, BLOCK_TIME_TARGET
 import hashlib
+from typing import Union
 import base58
 import json
+
+def derive_qsafe_address(pubkey: Union[bytes, str]) -> str:
+    # Convert pubkey to bytes if it's a string
+    if isinstance(pubkey, str):
+        pubkey = bytes.fromhex(pubkey)  # Assuming pubkey is hex-encoded
+    elif not isinstance(pubkey, bytes):
+        raise ValueError("pubkey must be bytes or hex string")
+
+    # Step 1: SHA3-256 hash of the public key
+    sha3_hash = hashlib.sha3_256(pubkey).digest()
+
+    # Step 2: Version prefix (0x00) + first 20 bytes of hash
+    versioned_hash = b'\x00' + sha3_hash[:20]
+
+    # Step 3: Checksum: first 4 bytes of SHA3-256(versioned_hash)
+    checksum = hashlib.sha3_256(versioned_hash).digest()[:4]
+
+    # Step 4: Concatenate versioned_hash + checksum
+    address_bytes = versioned_hash + checksum
+
+    # Step 5: Base58 encode and prefix with "bqs"
+    return "bqs" + base58.b58encode(address_bytes).decode()
 
 
 def sha256d(b: bytes) -> bytes:

@@ -280,14 +280,13 @@ async def push_blocks(peer_ip, peer_port):
                         signature = body.get("signature","unknown")
                         to_ = None
                         from_ = None
-
-                        if (body.get("transaction_data") == "initial_distribution") and (height == 1):
-                            print("im in initial distribution")
+                        message_str = body["msg_str"]
+                        if (message_str == "genesis") and (height == 0):
+                            print("**** IN GENESIS ***")
                             total_authorized = 21000000
                             to_ = ADMIN_ADDRESS
                             from_ = GENESIS_ADDRESS
                         else:
-                            message_str = body["msg_str"]
                             print(message_str)
                             from_ = message_str.split(":")[0]
                             print(from_)
@@ -345,16 +344,15 @@ async def push_blocks(peer_ip, peer_port):
                         print(total_authorized)
 
                         miner_fee = (Decimal(total_authorized) * Decimal("0.001")).quantize(Decimal("0.00000001"))
-                        treasury_fee = (Decimal(total_authorized) * Decimal("0.001")).quantize(Decimal("0.00000001"))
-                        grand_total_required = Decimal(total_authorized) + miner_fee + treasury_fee
+                        grand_total_required = Decimal(total_authorized) + miner_fee 
 
-                        if (height > 1):
+                        if (height > 0):
                             if grand_total_required > total_available:
                                 print(f"❌ Not enough balance! {total_available} < {grand_total_required}")
                                 raise ValueError("Invalid transaction: insufficient balance.")
                         
 
-                        if height == 1 or (verify_transaction(message_str, signature, pubkey) == True):
+                        if height == 0 or (verify_transaction(message_str, signature, pubkey) == True):
                             print("✅ Transaction validated successfully.")
                             batch = WriteBatch()
 
