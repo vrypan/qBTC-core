@@ -1,21 +1,7 @@
+
 # qBTC-core
 
-**qBTC-core** is a modern blockchain implementation inspired by Satoshi Nakamoto’s original design for Bitcoin. It stays true to foundational concepts such as:
-
-- **Proof-of-Work (PoW)**
-- **UTXO-based accounting**
-- **Bitcoin-style block headers**
-- **Mining compatibility**
-- **Standard RPC methods** like `getblocktemplate` and `submitblock`
-
-Built from the ground up in Python, qBTC introduces key innovations for the future of Bitcoin:
-
-- **Post-Quantum Security** using the ML-DSA signature scheme  
-- **Decentralized validator discovery** via a Kademlia DHT  
-- **Fast, scalable propagation** through an asynchronous gossip network  
-
-The cryptographic layer is modular, allowing ML-DSA to be replaced with other post-quantum algorithms as standards evolve.
-
+**qBTC-core** is a next-generation blockchain core implementation that supports **post-quantum secure transactions**, decentralized validator discovery via **Kademlia DHT**, and block/transaction propagation via a **gossip network** using modern Python async technology.
 
 ## 🌐 Key Features
 
@@ -57,8 +43,17 @@ The cryptographic layer is modular, allowing ML-DSA to be replaced with other po
 
 ## 🛠 Getting Started
 
+### 1. Clone the Repository & install dependencies
 
-### 1. Generate a Wallet
+```bash
+git clone https://github.com/bitcoinqs/qBTC-core.git
+cd qBTC-core
+pip install -r requirements.txt
+npm install @noble/post-quantum js-sha3 bs58
+```
+
+
+### 2. Generate a Wallet
 
 Before starting a node, you must generate a wallet file:
 
@@ -70,16 +65,8 @@ This will create a `wallet.json` file containing your ML-DSA public/private keyp
 
 Keep it safe — this is your validator's identity and signing authority.
 
-### 2. Clone the Repository
 
-```bash
-git clone https://github.com/yourorg/qBTC-core.git
-cd qBTC-core
-```
-
-
-
-### 2. Start a Node via CLI
+### 3. Start a Node via CLI
 
 You can start qBTC-core either as a **bootstrap server** or connect to an existing bootstrap peer.
 
@@ -101,19 +88,12 @@ This initializes a validator node and makes it discoverable by others. `--local`
 
 #### b) Connect to an Existing Bootstrap Server
 
-```bash
+```python
 python main.py 9003 9004 --wallet mywallet.json --Bootstrap_ip 192.168.1.10 --Bootstrap_port 9002
 ```
 
 Replace `192.168.1.10` and `9002` with the IP and port of your chosen bootstrap peer.
 
-
-### 3. Manual Run (Python)
-
-```bash
-pip install -r requirements.txt
-python main.py
-```
 
 ---
 
@@ -134,45 +114,6 @@ You can simulate multiple validators by launching separate containers or Python 
 | `protobuf.proto`     | Message format for blocks and txns      |
 | `database/`          | Local RocksDB-like storage abstraction  |
 | `wallet/`            | Post-quantum key management (ML-DSA)    |
-
----
-
-## 🔐 Security Notes
-
-- Transactions use **ML-DSA** for post-quantum-safe signing.
-- Each validator announces itself via DHT and syncs using gossip.
-- Merkle roots ensure transaction integrity in each block.
-- Future work includes replay protection, rate limiting, TLS, and full PoW consensus validation.
-
----
-
-## 📈 Roadmap
-
-- ✅ Merkle Root, Gossip, Kademlia, UTXO
-- 🔒 TLS + Peer Authentication
-- ⚠️ Fork Choice Rule & Difficulty Enforcement
-- 🧮 Fee Market & Miner Incentives
-- 🧹 UTXO Pruning & State Compression
-
----
-
-## 🧠 License
-
-MIT License. See [LICENSE](./LICENSE) for more information.
-
----
-
-## 🤝 Contributing
-
-PRs and issues welcome! To contribute:
-
-1. Fork the repo
-2. Create your feature branch (`git checkout -b feature/foo`)
-3. Commit your changes
-4. Push to the branch
-5. Open a PR
-
-
 
 ---
 
@@ -216,11 +157,49 @@ docker run --rm -it cpuminer-opt \
                       Miner TTF @ 41.47 Mh/s 0m00s, Net TTF @ 0.00 h/s NA
 ```
 
+---
+
+## 🔐 Security Notes
+
+- Transactions use **ML-DSA** for post-quantum-safe signing.
+- Each validator announces itself via DHT and syncs using gossip.
+- Merkle roots ensure transaction integrity in each block.
+- Future work includes replay protection, rate limiting, TLS, and full PoW consensus validation.
+
+---
+
+## 📈 Roadmap
+
+- ✅ Merkle Root, Gossip, Kademlia, UTXO
+- 🔒 TLS + Peer Authentication
+- ⚠️ Fork Choice Rule & Difficulty Enforcement
+- 🧮 Fee Market & Miner Incentives
+- 🧹 UTXO Pruning & State Compression
+
+---
+
+## 🧠 License
+
+MIT License. See [LICENSE](./LICENSE) for more information.
+
+---
+
+## 🤝 Contributing
+
+PRs and issues welcome! To contribute:
+
+1. Fork the repo
+2. Create your feature branch (`git checkout -b feature/foo`)
+3. Commit your changes
+4. Push to the branch
+5. Open a PR
 
 ---
 
 ## 🚀 Authors
 
-- Christian Papathanasiou / Quantum Safe Technologies Corp
+- Quantum Safe Technologies Corp
+- Contributors & researchers in the post-quantum blockchain space
+
 
 
