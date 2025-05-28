@@ -1,3 +1,6 @@
+
+# qBTC-core
+
 **qBTC-core** is a modern blockchain implementation inspired by Satoshi Nakamoto’s original design for Bitcoin. It stays true to foundational concepts such as:
 
 - **Proof-of-Work (PoW)**
@@ -13,7 +16,6 @@ Built from the ground up in Python, qBTC introduces key innovations for the futu
 - **Fast, scalable propagation** through an asynchronous gossip network  
 
 The cryptographic layer is modular, allowing ML-DSA to be replaced with other post-quantum algorithms as standards evolve.
-
 
 ## 🌐 Key Features
 
@@ -55,7 +57,7 @@ The cryptographic layer is modular, allowing ML-DSA to be replaced with other po
 
 ## 🛠 Getting Started
 
-### 1. Clone the Repository & install dependencies
+### 1. Clone the Repository & Install Dependencies
 
 ```bash
 git clone https://github.com/bitcoinqs/qBTC-core.git
@@ -63,7 +65,6 @@ cd qBTC-core
 pip install -r requirements.txt
 npm install @noble/post-quantum js-sha3 bs58
 ```
-
 
 ### 2. Generate a Wallet
 
@@ -76,7 +77,6 @@ python3 wallet/wallet.py
 This will create a `wallet.json` file containing your ML-DSA public/private keypair encrypted with a passphrase.
 
 Keep it safe — this is your validator's identity and signing authority.
-
 
 ### 3. Start a Node via CLI
 
@@ -96,16 +96,15 @@ usage: main.py [-h] [--Bootstrap_ip BOOTSTRAP_IP]
 python main.py 9001 9002 --wallet mywallet.json --local
 ```
 
-This initializes a validator node and makes it discoverable by others. `--local` means this node will act as a bootstrap server.
+This initializes a validator node and makes it discoverable by others.
 
 #### b) Connect to an Existing Bootstrap Server
 
-```python
+```bash
 python main.py 9003 9004 --wallet mywallet.json --Bootstrap_ip 192.168.1.10 --Bootstrap_port 9002
 ```
 
 Replace `192.168.1.10` and `9002` with the IP and port of your chosen bootstrap peer.
-
 
 ---
 
@@ -148,18 +147,13 @@ This sends 500 qBTC to the specified address using your signed wallet.
 To mine blocks (including mempool transactions), use `cpuminer-opt` connected to any node's RPC endpoint:
 
 ```bash
-docker run --rm -it cpuminer-opt \
-  -a sha256d \
-  -o http://api.bitcoinqs.org:8332 \  # RPC endpoint of any node
-  -u someuser -p x \
-  --coinbase-addr=1BoatSLRHtKNngkdXEeobR76b53LETtpyT  # Miner reward address
+docker run --rm -it cpuminer-opt   -a sha256d   -o http://api.bitcoinqs.org:8332   -u someuser -p x   --coinbase-addr=1BoatSLRHtKNngkdXEeobR76b53LETtpyT
 ```
 
 #### Example Output:
 
 ```
 [2025-05-28 11:47:16] 14 of 14 miner threads started using 'sha256d' algorithm
-
 [2025-05-28 11:47:17] CPU temp: curr 0 C max 0, Freq: 0.000/0.000 GHz
 [2025-05-28 11:47:17] New Block 1101, Tx 0, Net Diff 1.5259e-05, Ntime 6836f7c5
                       Miner TTF @ 280.00 h/s 3m54s, Net TTF @ 0.00 h/s NA
@@ -200,18 +194,15 @@ MIT License. See [LICENSE](./LICENSE) for more information.
 
 PRs and issues welcome! To contribute:
 
-1. Fork the repo
-2. Create your feature branch (`git checkout -b feature/foo`)
-3. Commit your changes
-4. Push to the branch
-5. Open a PR
+1. Fork the repo  
+2. Create your feature branch (`git checkout -b feature/foo`)  
+3. Commit your changes  
+4. Push to the branch  
+5. Open a PR  
 
 ---
 
 ## 🚀 Authors
 
-- Quantum Safe Technologies Corp
+- Christian Papathanasiou / Quantum Safe Technologies Corp  
 - Contributors & researchers in the post-quantum blockchain space
-
-
-
