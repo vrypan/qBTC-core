@@ -205,4 +205,3 @@ PRs and issues welcome! To contribute:
 ## 🚀 Authors
 
 - Christian Papathanasiou / Quantum Safe Technologies Corp  
-- Contributors & researchers in the post-quantum blockchain space
