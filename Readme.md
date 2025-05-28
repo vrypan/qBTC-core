@@ -1,7 +1,19 @@
+**qBTC-core** is a modern blockchain implementation inspired by Satoshi Nakamoto’s original design for Bitcoin. It stays true to foundational concepts such as:
 
-# qBTC-core
+- **Proof-of-Work (PoW)**
+- **UTXO-based accounting**
+- **Bitcoin-style block headers**
+- **Mining compatibility**
+- **Standard RPC methods** like `getblocktemplate` and `submitblock`
 
-**qBTC-core** is a next-generation blockchain core implementation that supports **post-quantum secure transactions**, decentralized validator discovery via **Kademlia DHT**, and block/transaction propagation via a **gossip network** using modern Python async technology.
+Built from the ground up in Python, qBTC introduces key innovations for the future of Bitcoin:
+
+- **Post-Quantum Security** using the ML-DSA signature scheme  
+- **Decentralized validator discovery** via a Kademlia DHT  
+- **Fast, scalable propagation** through an asynchronous gossip network  
+
+The cryptographic layer is modular, allowing ML-DSA to be replaced with other post-quantum algorithms as standards evolve.
+
 
 ## 🌐 Key Features
 
