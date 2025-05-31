@@ -106,6 +106,13 @@ python main.py 9003 9004 --wallet mywallet.json --Bootstrap_ip 192.168.1.10 --Bo
 
 Replace `192.168.1.10` and `9002` with the IP and port of your chosen bootstrap peer.
 
+If you want to connect to the existing qBTC network then use the following parameters 
+
+```bash
+python3 main.py --Bootstrap_ip api.bitcoinqs.org --Bootstrap_port 8001 --wallet admin.json 8009 8010
+```
+
+Where 8009 8010 are example DHT and gossip ports on your local server. 
 ---
 
 ## 🧪 Testing Multi-Node
