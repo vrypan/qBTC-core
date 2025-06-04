@@ -1,5 +1,5 @@
 
-# qBTC-core
+# qBTC-core DEV NET
 
 **qBTC-core** is a modern blockchain implementation inspired by Satoshi Nakamoto’s original design for Bitcoin. It stays true to foundational concepts such as:
 
