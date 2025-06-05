@@ -11,9 +11,9 @@
 
 Built from the ground up in Python, qBTC introduces key innovations for the future of Bitcoin:
 
-- **Post-Quantum Security** using the ML-DSA signature scheme  
-- **Decentralized validator discovery** via a Kademlia DHT  
-- **Fast, scalable propagation** through an asynchronous gossip network  
+- **Post-Quantum Security** using the ML-DSA signature scheme
+- **Decentralized validator discovery** via a Kademlia DHT
+- **Fast, scalable propagation** through an asynchronous gossip network
 
 The cryptographic layer is modular, allowing ML-DSA to be replaced with other post-quantum algorithms as standards evolve.
 
@@ -62,6 +62,8 @@ The cryptographic layer is modular, allowing ML-DSA to be replaced with other po
 ```bash
 git clone https://github.com/bitcoinqs/qBTC-core.git
 cd qBTC-core
+python3 -m venv venv
+source ./venv/bin/activate
 pip install -r requirements.txt
 npm install @noble/post-quantum js-sha3 bs58
 ```
@@ -106,13 +108,15 @@ python main.py 9003 9004 --wallet mywallet.json --Bootstrap_ip 192.168.1.10 --Bo
 
 Replace `192.168.1.10` and `9002` with the IP and port of your chosen bootstrap peer.
 
-If you want to connect to the existing qBTC network then use the following parameters 
+If you want to connect to the existing qBTC network then use the following parameters
 
 ```bash
 python3 main.py --Bootstrap_ip api.bitcoinqs.org --Bootstrap_port 8001 --wallet admin.json 8009 8010
 ```
 
-Where 8009 8010 are example DHT and gossip ports on your local server. 
+Where 8009 8010 are example DHT and gossip ports on your local server.
+These ports must be exposed on both TCP and UDP, if you intend to connect to the existing qBTC network.
+
 ---
 
 ## 🧪 Testing Multi-Node
@@ -202,14 +206,14 @@ MIT License. See [LICENSE](./LICENSE) for more information.
 
 PRs and issues welcome! To contribute:
 
-1. Fork the repo  
-2. Create your feature branch (`git checkout -b feature/foo`)  
-3. Commit your changes  
-4. Push to the branch  
-5. Open a PR  
+1. Fork the repo
+2. Create your feature branch (`git checkout -b feature/foo`)
+3. Commit your changes
+4. Push to the branch
+5. Open a PR
 
 ---
 
 ## 🚀 Authors
 
-- Christian Papathanasiou / Quantum Safe Technologies Corp  
+- Christian Papathanasiou / Quantum Safe Technologies Corp
