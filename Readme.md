@@ -178,6 +178,7 @@ docker run --rm -it cpuminer-opt   -a sha256d   -o http://api.bitcoinqs.org:8332
 - Each validator announces itself via DHT and syncs using gossip.
 - Merkle roots ensure transaction integrity in each block.
 - Future work includes replay protection, rate limiting, TLS, and full PoW consensus validation.
+- Internal/external audits can be found in the audits folder we are working our way through these issues in order of criticality
 
 ---
 
