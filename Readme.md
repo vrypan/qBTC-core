@@ -9,7 +9,7 @@
 - **Mining compatibility**
 - **Standard RPC methods** like `getblocktemplate` and `submitblock`
 
-Built from the ground up in Python, qBTC introduces key innovations for the future of Bitcoin:
+Built from the ground up in Python to demonstrate a proof-of-concept, qBTC introduces key innovations for the future of Bitcoin:
 
 - **Post-Quantum Security** using the ML-DSA signature scheme  
 - **Decentralized validator discovery** via a Kademlia DHT  
