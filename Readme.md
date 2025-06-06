@@ -189,7 +189,6 @@ docker run --rm -it cpuminer-opt   -a sha256d   -o http://api.bitcoinqs.org:8332
 - ⚠️ Fork Choice Rule & Difficulty Enforcement
 - 🧮 Fee Market & Miner Incentives
 - 🧹 UTXO Pruning & State Compression
-- 🔒 We currently have a dependency on both frontend and backend on @noble/post-quantum. This is because liboqs python does not play nicely and does not verify transactions signed with @noble/post-quantum and vice versa. This is a dependency we will remove and move to python-only bindings as soon as liboqs fully supports @noble/post-quantum.
 
 ---
 
