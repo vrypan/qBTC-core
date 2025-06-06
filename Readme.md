@@ -63,8 +63,10 @@ The cryptographic layer is modular, allowing ML-DSA to be replaced with other po
 git clone https://github.com/bitcoinqs/qBTC-core.git
 cd qBTC-core
 pip install -r requirements.txt
-npm install @noble/post-quantum js-sha3 bs58
 ```
+
+Follow the instructions here to install liboqs-python:
+https://github.com/open-quantum-safe/liboqs-python
 
 ### 2. Generate a Wallet
 
