@@ -17,10 +17,12 @@ kad_server = None
 
 async def get_external_ip():
     global own_ip
+    if own_ip:
+        return own_ip
     async with aiohttp.ClientSession() as session:
-        async with session.get('https://api.ipify.org') as response:
-            own_ip = await response.text()
-            return own_ip
+        async with session.get("https://api.ipify.org") as resp:
+            own_ip = await resp.text()
+    return own_ip
 
 async def run_kad_server(port, bootstrap_addr=None, wallet=None, gossip_node=None):
     global kad_server
@@ -87,7 +89,6 @@ async def discover_peers_once(gossip_node):
 
 
 async def push_blocks(peer_ip, peer_port):
-    from gossip.gossip import calculate_merkle_root
     print("******* IM IN PUSH BLOCKS ******")
     print(peer_ip)
     print(peer_port)
