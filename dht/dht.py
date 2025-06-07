@@ -5,8 +5,9 @@ import aiohttp
 import time
 import socket
 from decimal import Decimal
+from rocksdict import WriteBatch
 from kademlia.network import Server as KademliaServer
-from config.config import shutdown_event, VALIDATOR_ID, HEARTBEAT_INTERVAL, VALIDATOR_TIMEOUT, VALIDATORS_LIST_KEY, BOOTSTRAP_NODES, DEFAULT_GOSSIP_PORT
+from config.config import ADMIN_ADDRESS,GENESIS_ADDRESS, shutdown_event, VALIDATOR_ID, HEARTBEAT_INTERVAL, VALIDATOR_TIMEOUT, VALIDATORS_LIST_KEY, BOOTSTRAP_NODES, DEFAULT_GOSSIP_PORT
 from state.state import validator_keys, known_validators
 from blockchain.blockchain import calculate_merkle_root
 from database.database import get_db,get_current_height
