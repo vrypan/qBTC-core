@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+import "message.proto";
+
+service NodeService {
+  rpc GetHeight(google.protobuf.Empty) returns (HeightMessage);
+  rpc GetPeers(google.protobuf.Empty) returns (PeersMessage);
+  rpc GetBlocks(BlocksRequest) returns (stream Block);
+};
