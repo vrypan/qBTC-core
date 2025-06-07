@@ -80,7 +80,7 @@ async def discover_peers_once(gossip_node):
                 continue
             peer = (info["ip"], info["port"])
             gossip_node.add_peer(info["ip"], info["port"])
-            validator_keys[vid] = info["publicKey"]
+            #validator_keys[vid] = info["publicKey"]
             logging.info(f"Initially connected to peer {vid} at {peer}")
         else:
             logging.warning(f"No gossip info found for validator {vid}")
@@ -493,7 +493,7 @@ async def maintain_validator_list(gossip_node):
                     if info["ip"] != own_ip:
                         gossip_node.add_peer(info["ip"], info["port"])
                         await push_blocks(info["ip"], info["port"])
-                        validator_keys[v] = info["publicKey"]
+                        #validator_keys[v] = info["publicKey"]
                         logging.info(f"New validator joined: {v} at {info['ip']}:{info['port']}")
             except Exception as e:
                 logging.warning(f"Failed to process new validator {v}: {e}")
