@@ -66,7 +66,7 @@ async def get_block_template(data):
         "version": 1,
         "previousblockhash": f"{previous_block_hash}",
         "target": f"{bits_to_target(0x1f00ffff):064x}",
-        "bits": f"{0x1f00ffff:08x}",
+        "bits": f"{0x1f00ffff:08x}", 
         "curtime": timestamp,
         "height": height + 1,
         "mutable": ["time", "transactions", "prevblock"],
