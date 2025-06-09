@@ -3,19 +3,17 @@ import socket
 import time
 import os
 import json
-
-from kademlia.network import Server as DHTServer
-from protobuf.message_pb2 import Block
-
 import logging
 
-# Set up global logging config
-logging.basicConfig(level=logging.INFO)  # or DEBUG if you want everything
-
-# Only increase verbosity for Kademlia
-logging.getLogger("kademlia").setLevel(logging.DEBUG)
+from protobuf.message_pb2 import Block
+from .dht import KademliaNode
 
 BUF_SIZE = 65536
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("kademlia").setLevel(logging.WARNING)
+
 
 class GossipNode:
     def __init__(self, address, bootstrap_addr=None, is_full_node=True):
@@ -24,10 +22,17 @@ class GossipNode:
         self.is_full_node = is_full_node
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.known_nonces = set()
-        self.peers = []
-        self.dht_server = DHTServer()
 
-    def serialize_block(self) -> bytes:
+        # Use our custom KademliaNode wrapper
+        self.dht_node = KademliaNode(
+            host=address[0],
+            port=address[1] + 1000,
+            bootstrap=bootstrap_addr
+        )
+
+    def random_block(self) -> Block:
+        ''' Create a rendom block, for test purposes
+        '''
         block = Block(
             version=1,
             previous_hash=b"prevhash",
@@ -44,13 +49,28 @@ class GossipNode:
         tx.body.msg_str = b"hello"
         tx.body.pubkey = b"pub"
         tx.body.signature = b"sig"
-        return block.SerializeToString()
+        return block
 
-    async def gossip_block(self, block_bytes):
-        for peer in self.peers:
-            await asyncio.sleep(0)
-            self.sock.sendto(block_bytes, peer)
-            print(f"{self.address} Gossiped block to {peer}")
+    async def gossip_block(self, block):
+            block_bytes = block.SerializeToString()
+            registry_raw = await self.dht_get("peer-registry")
+            if not registry_raw:
+                return
+            peer_keys = json.loads(registry_raw)
+            for key in peer_keys:
+                if key == self.peer_key:
+                    continue
+                try:
+                    value = await self.dht_get(key)
+                    if value is None:
+                        raise ValueError("Received None value from DHT")
+                    info = json.loads(value)
+                    ip = key.split(":")[1]
+                    port = info["gossip_port"]
+                    self.sock.sendto(block_bytes, (ip, port))
+                    print(f"[>] {self.address} Gossiped block to {ip}:{port}, nonce={block.nonce}")
+                except Exception as e:
+                    print(f"[!] Failed to gossip to {key}: {e}")
 
     async def listen_for_blocks(self):
         loop = asyncio.get_running_loop()
@@ -59,69 +79,55 @@ class GossipNode:
             block = Block()
             try:
                 block.ParseFromString(data)
-                print(f"{self.address} received block from {addr}: nonce={block.nonce}")
+                print(f"[<] {self.address} received block from {addr}: nonce={block.nonce}")
                 if block.nonce not in self.known_nonces:
                     self.known_nonces.add(block.nonce)
-                    await self.gossip_block(data)
+                    await self.gossip_block(block)
             except Exception as e:
-                print(f"Failed to parse block from {addr}: {e}")
+                print(f"[!] Failed to parse block from {addr}: {e}")
 
     async def broadcast_loop(self):
         while True:
-            block_bytes = self.serialize_block()
-            await self.gossip_block(block_bytes)
+            block = self.random_block()
+            await self.gossip_block(block)
             await asyncio.sleep(10)
 
-    async def refresh_peers_loop(self):
-        while True:
-            try:
-                self.peers = []
-                registry_raw = await self.dht_server.get("peer-registry")
-                if registry_raw:
-                    print(f"{self.address} raw registry: {registry_raw}")
-                    peer_keys = json.loads(registry_raw)
-                    for key in peer_keys:
-                        if key == self.peer_key:
-                            continue
-                        value = await self.dht_server.get(key)
-                        if value == "alive":
-                            _, ip, port = key.split(":")
-                            self.peers.append((ip, int(port)))
-                print(f"{self.address} updated peer list: {self.peers}")
-            except Exception as e:
-                print(f"DHT peer discovery error: {e}")
-            await asyncio.sleep(10)
+    async def dht_set(self, key, value):
+        await self.dht_node.set(key, value)
+
+    async def dht_get(self, key):
+        return await self.dht_node.get(key)
 
     async def run(self):
         self.sock.bind(self.address)
         self.sock.setblocking(False)
 
         print(f"Listening on {self.address}")
-        dht_port = self.address[1] + 1000
-        await self.dht_server.listen(dht_port)
 
-        if self.bootstrap_addr:
-            await self.dht_server.bootstrap([self.bootstrap_addr])
-            await asyncio.sleep(1)
+        # Start Kademlia DHT node in background
+        asyncio.create_task(self.dht_node.start())
+        await asyncio.sleep(2)  # Allow DHT time to bootstrap
 
         self.peer_key = f"peer:{self.address[0]}:{self.address[1]}"
 
-        # Register self in DHT
         try:
-            await self.dht_server.set(self.peer_key, "alive")
+            # Register self
+            await self.dht_set(self.peer_key, json.dumps({
+                "gossip_port": self.address[1]
+            }))
             print(f"{self.address} registered in DHT as {self.peer_key}")
 
-            # Add to global peer-registry
-            registry_raw = await self.dht_server.get("peer-registry")
+            # Update peer registry
+            registry_raw = await self.dht_get("peer-registry")
             peer_keys = set(json.loads(registry_raw)) if registry_raw else set()
             peer_keys.add(self.peer_key)
-            await self.dht_server.set("peer-registry", json.dumps(list(peer_keys)))
+            await self.dht_set("peer-registry", json.dumps(list(peer_keys)))
         except Exception as e:
             print(f"DHT set error: {e}")
 
         tasks = [
             self.listen_for_blocks(),
-            self.refresh_peers_loop()
+            #self.refresh_peers_loop()
         ]
         if self.is_full_node:
             tasks.append(self.broadcast_loop())
