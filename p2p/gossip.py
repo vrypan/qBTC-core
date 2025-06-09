@@ -5,7 +5,7 @@ import os
 import json
 import logging
 
-from protobuf.message_pb2 import Block
+from protobuf.message_pb2 import Block, GossipMessage, GossipMessageType
 from .dht import KademliaNode
 
 BUF_SIZE = 65536
@@ -51,8 +51,13 @@ class GossipNode:
         tx.body.signature = b"sig"
         return block
 
-    async def gossip_block(self, block):
-            block_bytes = block.SerializeToString()
+
+    async def gossip_block(self, block: Block):
+            message = GossipMessage(
+                type = GossipMessageType.BLOCK,
+                block=block,
+            )
+            message_bytes = message.SerializeToString()
             registry_raw = await self.dht_get("peer-registry")
             if not registry_raw:
                 return
@@ -67,7 +72,7 @@ class GossipNode:
                     info = json.loads(value)
                     ip = key.split(":")[1]
                     port = info["gossip_port"]
-                    self.sock.sendto(block_bytes, (ip, port))
+                    self.sock.sendto(message_bytes, (ip, port))
                     print(f"[>] {self.address} Gossiped block to {ip}:{port}, nonce={block.nonce}")
                 except Exception as e:
                     print(f"[!] Failed to gossip to {key}: {e}")
@@ -76,13 +81,14 @@ class GossipNode:
         loop = asyncio.get_running_loop()
         while True:
             data, addr = await loop.sock_recvfrom(self.sock, BUF_SIZE)
-            block = Block()
+            message = GossipMessage()
             try:
-                block.ParseFromString(data)
-                print(f"[<] {self.address} received block from {addr}: nonce={block.nonce}")
-                if block.nonce not in self.known_nonces:
-                    self.known_nonces.add(block.nonce)
-                    await self.gossip_block(block)
+                message.ParseFromString(data)
+                if message.type == GossipMessageType.BLOCK:
+                    print(f"[<] {self.address} received block from {addr}: nonce={message.block.nonce}")
+                    if message.block.nonce not in self.known_nonces:
+                        self.known_nonces.add(message.block.nonce)
+                        await self.gossip_block(message.block)
             except Exception as e:
                 print(f"[!] Failed to parse block from {addr}: {e}")
 
@@ -111,7 +117,7 @@ class GossipNode:
         self.peer_key = f"peer:{self.address[0]}:{self.address[1]}"
 
         try:
-            # Register self
+            # Register the ip:port for DHT, and the gossip port
             await self.dht_set(self.peer_key, json.dumps({
                 "gossip_port": self.address[1]
             }))

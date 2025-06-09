@@ -24,6 +24,9 @@ class KademliaNode:
         await asyncio.Event().wait()
 
     async def log_peers(self):
+        """
+        Convinience method to log peers, mostly for debugging.
+        """
         while True:
             if self.server.protocol and self.server.protocol.router:
                 contacts = self.server.protocol.router.find_neighbors(self.server.node)
