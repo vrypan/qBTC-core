@@ -9,7 +9,7 @@
 - **Mining compatibility**
 - **Standard RPC methods** like `getblocktemplate` and `submitblock`
 
-Built from the ground up in Python, qBTC introduces key innovations for the future of Bitcoin:
+Built from the ground up in Python to demonstrate a proof-of-concept, qBTC introduces key innovations for the future of Bitcoin:
 
 - **Post-Quantum Security** using the ML-DSA signature scheme
 - **Decentralized validator discovery** via a Kademlia DHT
@@ -65,8 +65,10 @@ cd qBTC-core
 python3 -m venv venv
 source ./venv/bin/activate
 pip install -r requirements.txt
-npm install @noble/post-quantum js-sha3 bs58
 ```
+
+Follow the instructions here to install liboqs-python:
+https://github.com/open-quantum-safe/liboqs-python
 
 ### 2. Generate a Wallet
 
@@ -182,6 +184,7 @@ docker run --rm -it cpuminer-opt   -a sha256d   -o http://api.bitcoinqs.org:8332
 - Each validator announces itself via DHT and syncs using gossip.
 - Merkle roots ensure transaction integrity in each block.
 - Future work includes replay protection, rate limiting, TLS, and full PoW consensus validation.
+- Internal/external audits can be found in the audits folder we are working our way through these issues in order of criticality
 
 ---
 
@@ -192,7 +195,6 @@ docker run --rm -it cpuminer-opt   -a sha256d   -o http://api.bitcoinqs.org:8332
 - ⚠️ Fork Choice Rule & Difficulty Enforcement
 - 🧮 Fee Market & Miner Incentives
 - 🧹 UTXO Pruning & State Compression
-- 🔒 We currently have a dependency on both frontend and backend on @noble/post-quantum. This is because liboqs python does not play nicely and does not verify transactions signed with @noble/post-quantum and vice versa. This is a dependency we will remove and move to python-only bindings as soon as liboqs fully supports @noble/post-quantum.
 
 ---
 

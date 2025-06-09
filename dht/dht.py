@@ -5,52 +5,30 @@ import aiohttp
 import time
 import socket
 from decimal import Decimal
+from rocksdict import WriteBatch
 from kademlia.network import Server as KademliaServer
-from config.config import shutdown_event, VALIDATOR_ID, HEARTBEAT_INTERVAL, VALIDATOR_TIMEOUT, VALIDATORS_LIST_KEY, BOOTSTRAP_NODES, DEFAULT_GOSSIP_PORT
+from config.config import ADMIN_ADDRESS,GENESIS_ADDRESS, shutdown_event, VALIDATOR_ID, HEARTBEAT_INTERVAL, VALIDATOR_TIMEOUT, VALIDATORS_LIST_KEY, BOOTSTRAP_NODES, DEFAULT_GOSSIP_PORT
 from state.state import validator_keys, known_validators
 from blockchain.blockchain import calculate_merkle_root
 from database.database import get_db,get_current_height
 from wallet.wallet import verify_transaction
+from sync.sync import process_blocks_from_peer
 
 kad_server = None
+own_ip = None
 
-import logging
-
-kademlia_formatter = logging.Formatter(
-    "%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
-
-kademlia_handler = logging.StreamHandler()
-kademlia_handler.setFormatter(kademlia_formatter)
-
-for name in [
-    "kademlia.network",
-    "kademlia.protocol",
-    "kademlia.routing",
-    "kademlia.node",
-    "kademlia.crawling"
-]:
-    logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
-    logger.addHandler(kademlia_handler)
-    logger.propagate = False
-
-dht_logger = logging.getLogger("qbtc-dht")
-if not dht_logger.hasHandlers():
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter("[dht] %(asctime)s [%(levelname)s]: %(message)s")
-    handler.setFormatter(formatter)
-    dht_logger.addHandler(handler)
-dht_logger.setLevel(logging.DEBUG)
-dht_logger.propagate = False
+def b2s(v: bytes | str | None) -> str | None:
+    """Decode bytes from DB/DHT to str; leave str or None unchanged."""
+    return v.decode() if isinstance(v, bytes) else v
 
 async def get_external_ip():
     global own_ip
+    if own_ip:
+        return own_ip
     async with aiohttp.ClientSession() as session:
-        async with session.get('https://api.ipify.org') as response:
-            own_ip = await response.text()
-            return own_ip
+        async with session.get("https://api.ipify.org") as resp:
+            own_ip = await resp.text()
+    return own_ip
 
 async def run_kad_server(port, bootstrap_addr=None, wallet=None, gossip_node=None):
     global kad_server
@@ -60,8 +38,8 @@ async def run_kad_server(port, bootstrap_addr=None, wallet=None, gossip_node=Non
         bootstrap_addr = [addr for addr in bootstrap_addr if addr[1] != port]
         if bootstrap_addr:
             await kad_server.bootstrap(bootstrap_addr)
-            dht_logger.info(f"Bootstrapped to {bootstrap_addr}")
-    dht_logger.info(f"Validator {VALIDATOR_ID} running DHT on port {port}")
+            logging.info(f"Bootstrapped to {bootstrap_addr}")
+    logging.info(f"Validator {VALIDATOR_ID} running DHT on port {port}")
     await register_validator_once()
     if wallet and gossip_node:
         ip_address = await get_external_ip()
@@ -71,12 +49,12 @@ async def run_kad_server(port, bootstrap_addr=None, wallet=None, gossip_node=Non
     return kad_server
 
 async def register_validator_once():
-    existing_json = await kad_server.get(VALIDATORS_LIST_KEY)
+    existing_json = b2s(await kad_server.get(VALIDATORS_LIST_KEY))
     existing = set(json.loads(existing_json)) if existing_json else set()
     if VALIDATOR_ID not in existing:
         existing.add(VALIDATOR_ID)
         await kad_server.set(VALIDATORS_LIST_KEY, json.dumps(list(existing)))
-        dht_logger.info(f"Validator joined: {VALIDATOR_ID}")
+        logging.info(f"Validator joined: {VALIDATOR_ID}")
     known_validators.clear()
     known_validators.update(existing)
 
@@ -88,17 +66,17 @@ async def announce_gossip_port(wallet, ip="127.0.0.1", port=DEFAULT_GOSSIP_PORT,
         await kad_server.set(key, json.dumps(info))
         stored_value = await kad_server.get(key)
         if stored_value and json.loads(stored_value) == info:
-            dht_logger.info(f"Announced gossip info: {key} -> {info}")
+            logging.info(f"Announced gossip info: {key} -> {info}")
             if gossip_node and is_bootstrap:
                 gossip_node.add_peer(ip, port)
             return
         await asyncio.sleep(2)
-    dht_logger.error("Failed to announce gossip port")
+    logging.error("Failed to announce gossip port")
 
 async def discover_peers_once(gossip_node):
     validators_json = await kad_server.get(VALIDATORS_LIST_KEY)
     validator_ids = json.loads(validators_json) if validators_json else []
-    dht_logger.info(f"Discovered validators: {validator_ids}")
+    logging.info(f"Discovered validators: {validator_ids}")
     for vid in validator_ids:
         if vid == VALIDATOR_ID:
             continue
@@ -110,14 +88,13 @@ async def discover_peers_once(gossip_node):
                 continue
             peer = (info["ip"], info["port"])
             gossip_node.add_peer(info["ip"], info["port"])
-            validator_keys[vid] = info["publicKey"]
-            dht_logger.info(f"Initially connected to peer {vid} at {peer}")
+            #validator_keys[vid] = info["publicKey"]
+            logging.info(f"Initially connected to peer {vid} at {peer}")
         else:
-            dht_logger.warning(f"No gossip info found for validator {vid}")
+            logging.warning(f"No gossip info found for validator {vid}")
 
 
 async def push_blocks(peer_ip, peer_port):
-    from gossip.gossip import calculate_merkle_root
     print("******* IM IN PUSH BLOCKS ******")
     print(peer_ip)
     print(peer_port)
@@ -152,7 +129,7 @@ async def push_blocks(peer_ip, peer_port):
             print(msg)
             peer_height = msg.get("height")
             peer_tip = msg.get("current_tip")
-            dht_logger.info(f"*** Peer {peer_ip} responded with height {peer_height}")
+            logging.info(f"*** Peer {peer_ip} responded with height {peer_height}")
 
         # Only push if our height is greater
         if int(peer_height) < local_height:
@@ -184,15 +161,18 @@ async def push_blocks(peer_ip, peer_port):
                 full_transactions = []
 
                 for tx_id in found_block.get("tx_ids", []):
+                    tx_key = f"tx:{tx_id}".encode()
+                    if tx_key in db:
+                        tx_obj = json.loads(db[tx_key].decode())
+                        full_transactions.append({
+                            "tx_id": tx_id,
+                            "transaction": tx_obj
+                        })
 
-                        tx_key = f"tx:{tx_id}".encode()
-                        if tx_key in db:
-                            tx_data = json.loads(db[tx_key].decode())
-                            full_transactions.append(tx_data)
-                        else:
-                            print(f"Warning: Transaction {tx_id} not found in DB!")
+                cbase_key = f"tx:coinbase_{h}".encode()
+                if cbase_key in db:
+                    full_transactions.append(json.loads(db[cbase_key].decode()))
 
-                # Attach the full transactions to the block
                 found_block["full_transactions"] = full_transactions
 
                 blocks_to_send.append(found_block)
@@ -230,209 +210,8 @@ async def push_blocks(peer_ip, peer_port):
                 raise ValueError(f"Bad JSON from peer: {e} — payload was {raw!r}")
 
             blocks = sorted(response.get("blocks", []), key=lambda x: x["height"])
-            dht_logger.info(f"Received {len(blocks)} blocks from from peer")
-
-            db = get_db()
-
-            for block in blocks:
-                height = block.get("height")
-                print(height)
-                block_hash = block.get("block_hash")
-                print(block_hash)
-                prev_hash = block.get("previous_hash")
-                block_key = f"block:{block_hash}".encode()
-                if block_key in db:
-                    dht_logger.info(f"Block {block_hash} already exists in DB. Skipping.")
-                    continue
-                print(prev_hash)
-                tx_ids = block.get("tx_ids", [])
-                print(tx_ids)
-                nonce = block.get("nonce")
-                print(nonce)
-                timestamp = block.get("timestamp")
-                print(timestamp)
-                miner_address = block.get("miner_address")
-                print(miner_address)
-                full_transactions = block.get("full_transactions", [])
-                print(full_transactions)
-                block_merkle_root = block.get("merkle_root")
-
-                print(f"[SYNC] Processing block height {height} with hash {block_hash}")
-
-                for tx in full_transactions:
-
-                    if tx.get("tx_id") == "genesis_tx":
-                        print("[SYNC] Genesis transaction detected.")
-                        db.put(b"tx:genesis_tx", json.dumps(tx).encode())
-                        continue
-
-
-                    if "version" in tx and "inputs" in tx and "outputs" in tx:
-                        print("[SYNC] Coinbase transaction detected.")
-                        coinbase_tx_id = "coinbase_" + str(height)
-                        print("coinbase_tx_id")
-                        print(coinbase_tx_id)
-                        db.put(f"tx:{coinbase_tx_id}".encode(), json.dumps(tx).encode())
-
-                        for idx, output in enumerate(tx.get("outputs", [])):
-                            output_key = f"utxo:{coinbase_tx_id}:{idx}".encode()
-                            print(output_key)
-                            utxo = {
-                                "txid": coinbase_tx_id,
-                                "utxo_index": idx,
-                                "sender": "coinbase",
-                                "receiver": "unknown",
-                                "amount": output.get("value"),
-                                "spent": False
-                            }
-                            print(utxo)
-                            db.put(output_key, json.dumps(utxo).encode())
-                        continue
-
-
-                    if "txid" in tx:
-                        txid = tx["txid"]
-
-                        print("txid is")
-                        print(txid)
-
-
-                        inputs = tx.get("inputs", [])
-                        print("inputs are")
-                        print(inputs)
-                        outputs = tx.get("outputs", [])
-                        print("outputs are")
-                        print(outputs)
-                        body = tx.get("body", {})
-                        print("body is")
-                        print(body)
-
-                        pubkey = body.get("pubkey", "unknown")
-                        signature = body.get("signature","unknown")
-                        to_ = None
-                        from_ = None
-                        message_str = body["msg_str"]
-                        if (message_str == "genesis") and (height == 0):
-                            print("**** IN GENESIS ***")
-                            total_authorized = 21000000
-                            to_ = ADMIN_ADDRESS
-                            from_ = GENESIS_ADDRESS
-                        else:
-                            print(message_str)
-                            from_ = message_str.split(":")[0]
-                            print(from_)
-                            to_ = message_str.split(":")[1]
-                            print(to_)
-                            total_authorized = message_str.split(":")[2]
-                            time_ = message_str.split(":")[3]
-                            print(time_)
-
-                        total_available = Decimal("0")
-                        total_required = Decimal("0")
-
-                        print("im here")
-
-
-                        for input_ in inputs:
-                            input_receiver = input_.get("receiver")
-                            input_spent = input_.get("spent", False)
-                            input_amount = input_.get("amount", "0")
-
-                            print(f"input receiver {input_receiver}")
-                            print(f"to {to_}")
-                            print(f"from: {from_}")
-                            print(f"input_spent {input_spent}")
-                            print(f"input amount {input_amount}")
-
-                            print("im past inputs")
-
-                            if (input_receiver == from_):
-                                print("input receiver is from")
-
-                                if (height == 1):
-                                    print("coins not spent")
-                                    total_available += Decimal(input_amount)
-                                    print(f"total available increased by {input_amount}")
-
-                                else:
-                                    if (input_spent == False):
-                                        print("coins not spent")
-                                        total_available += Decimal(input_amount)
-                                        print(f"total available increased by {input_amount}")
-
-                        print(f"**** TOTAL AVAILABLE IS {total_available} ")
-
-
-                        for output_ in outputs:
-                            output_receiver = output_.get("receiver")
-                            output_amount = output_.get("amount", "0")
-                            if output_receiver in (to_, ADMIN_ADDRESS):
-                                total_required += Decimal(output_amount)
-                            else:
-                                print(f"❌ Hack detected! Unauthorized output to {output_receiver}")
-                                raise ValueError("Hack detected, invalid transaction.")
-
-                        print(total_authorized)
-
-                        miner_fee = (Decimal(total_authorized) * Decimal("0.001")).quantize(Decimal("0.00000001"))
-                        grand_total_required = Decimal(total_authorized) + miner_fee
-
-                        if (height > 0):
-                            if grand_total_required > total_available:
-                                print(f"❌ Not enough balance! {total_available} < {grand_total_required}")
-                                raise ValueError("Invalid transaction: insufficient balance.")
-
-
-                        if height == 0 or (verify_transaction(message_str, signature, pubkey) == True):
-                            print("✅ Transaction validated successfully.")
-                            batch = WriteBatch()
-
-
-                            batch.put(f"tx:{txid}".encode(), json.dumps(tx).encode())
-
-                            # Spend each input UTXO
-                            for input_ in inputs:
-                                if "txid" in input_:
-                                    spent_utxo_key = f"utxo:{input_['txid']}:{input_.get('utxo_index', 0)}".encode()
-                                    if spent_utxo_key in db:
-                                        utxo = json.loads(db.get(spent_utxo_key).decode())
-                                        utxo["spent"] = True
-                                        batch.put(spent_utxo_key, json.dumps(utxo).encode())
-                                    else:
-                                        print(f"[SYNC] Warning: input UTXO not found {spent_utxo_key}")
-
-                            # Create UTXOs from outputs
-                            for output in outputs:
-                                output_key = f"utxo:{txid}:{output.get('utxo_index', 0)}".encode()
-                                batch.put(output_key, json.dumps(output).encode())
-
-                            # Atomic commit
-                            db.write(batch)
-                        else:
-                            print("❌ Transaction verification failed.")
-
-                print("tx_ids are")
-                print(tx_ids)
-                calculated_merkle_root = calculate_merkle_root(tx_ids)
-
-                print(calculated_merkle_root)
-                print(block_merkle_root)
-
-                if (calculated_merkle_root == block_merkle_root):
-
-                    block_data = {
-                        "height": height,
-                        "block_hash": block_hash,
-                        "previous_hash": prev_hash,
-                        "tx_ids": tx_ids,
-                        "nonce": nonce,
-                        "timestamp": timestamp,
-                        "miner_address": miner_address,
-                        "merkle_root": calculated_merkle_root
-                    }
-                    db.put(f"block:{block_hash}".encode(), json.dumps(block_data).encode())
-
-                    print(f"[SYNC] Stored block {height} successfully.")
+            logging.info(f"Received {len(blocks)} blocks from from peer")
+            process_blocks_from_peer(blocks)
 
         else:
             print("Peer up to date")
@@ -457,28 +236,28 @@ async def discover_peers_periodically(gossip_node):
             gossip_info_json = await kad_server.get(gossip_key)
             if gossip_info_json:
                 info = json.loads(gossip_info_json)
-                dht_logger.debug("*** in discover peers periodically")
-                dht_logger.debug(info["ip"])
-                dht_logger.debug(own_ip)
+                print("*** in discover peers periodically")
+                print(info["ip"])
+                print(own_ip)
                 if (info["ip"] == own_ip):
                     continue
                 peer = (info["ip"], info["port"])
                 if peer not in known_peers:
                     gossip_node.add_peer(info["ip"], info["port"])
                     #validator_keys[vid] = info["publicKey"]
-                    dht_logger.info(f"Connected to peer {vid} at {peer}")
-                    await push_blocks(info["ip"],info["port"])
+                    logging.info(f"Connected to peer {vid} at {peer}")
+                    #await push_blocks(info["ip"],info["port"])
 
                     known_peers.add(peer)
             else:
-                dht_logger.warning(f"No gossip info found for validator {vid}")
-        await asyncio.sleep(60)
+                logging.warning(f"No gossip info found for validator {vid}")
+        await asyncio.sleep(5)
 
 async def update_heartbeat():
     heartbeat_key = f"validator_{VALIDATOR_ID}_heartbeat"
     while not shutdown_event.is_set():
         if kad_server.bootstrappable_neighbors():
-            await kad_server.set(heartbeat_key, time.time())
+            await kad_server.set(heartbeat_key, str(time.time()))
         await asyncio.sleep(HEARTBEAT_INTERVAL)
 
 async def maintain_validator_list(gossip_node):
@@ -487,7 +266,7 @@ async def maintain_validator_list(gossip_node):
             dht_list_json = await kad_server.get(VALIDATORS_LIST_KEY)
             dht_set = set(json.loads(dht_list_json)) if dht_list_json else set()
         except Exception as e:
-            dht_logger.error(f"Failed to fetch validator list from DHT: {e}")
+            logging.error(f"Failed to fetch validator list from DHT: {e}")
             dht_set = set()
 
         current_time = time.time()
@@ -497,11 +276,13 @@ async def maintain_validator_list(gossip_node):
         tasks = {v: asyncio.create_task(kad_server.get(f"validator_{v}_heartbeat")) for v in dht_set}
         for v, task in tasks.items():
             try:
-                last_seen = await task
-                if last_seen and (current_time - float(last_seen)) <= VALIDATOR_TIMEOUT:
+                last_seen_raw = await kad_server.get(f"validator_{v}_heartbeat")
+                last_seen_str = b2s(last_seen_raw)
+                last_seen = float(last_seen_str) if last_seen_str else None
+                if last_seen and (current_time - last_seen) <= VALIDATOR_TIMEOUT:
                     alive.add(v)
             except Exception as e:
-                dht_logger.warning(f"Failed to fetch heartbeat for {v}: {e}")
+                logging.warning(f"Failed to fetch heartbeat for {v}: {e}")
 
         alive.add(VALIDATOR_ID)
 
@@ -509,7 +290,7 @@ async def maintain_validator_list(gossip_node):
             try:
                 await kad_server.set(VALIDATORS_LIST_KEY, json.dumps(list(alive)))
             except Exception as e:
-                dht_logger.error(f"Failed to update validator list in DHT: {e}")
+                logging.error(f"Failed to update validator list in DHT: {e}")
 
         # Process newly joined validators
         newly_joined = alive - known_validators
@@ -522,11 +303,11 @@ async def maintain_validator_list(gossip_node):
                     info = json.loads(gossip_info_json)
                     if info["ip"] != own_ip:
                         gossip_node.add_peer(info["ip"], info["port"])
-                        await push_blocks(info["ip"], info["port"])
+                        #await push_blocks(info["ip"], info["port"])
                         validator_keys[v] = info["publicKey"]
-                        dht_logger.info(f"New validator joined: {v} at {info['ip']}:{info['port']}")
+                        logging.info(f"New validator joined: {v} at {info['ip']}:{info['port']}")
             except Exception as e:
-                dht_logger.warning(f"Failed to process new validator {v}: {e}")
+                logging.warning(f"Failed to process new validator {v}: {e}")
 
         # Process validators that have left
         just_left = known_validators - alive
@@ -537,9 +318,9 @@ async def maintain_validator_list(gossip_node):
                     info = json.loads(gossip_info_json)
                     gossip_node.remove_peer(info["ip"], info["port"])
                 validator_keys.pop(v, None)
-                dht_logger.info(f"Validator left: {v}")
+                logging.info(f"Validator left: {v}")
             except Exception as e:
-                dht_logger.warning(f"Failed to remove validator {v}: {e}")
+                logging.warning(f"Failed to remove validator {v}: {e}")
 
         # Update known validators
         known_validators.clear()
