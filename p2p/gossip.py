@@ -14,7 +14,13 @@ BUF_SIZE = 65536
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("kademlia").setLevel(logging.WARNING)
 
+"""
+The gossip node uses a Kademlia DHT to discover peers.
 
+It broadcasts and receives messages from the network. Messages are
+encoded as protobuf GossipMessage. (See /protobufs/)
+
+"""
 class GossipNode:
     def __init__(self, address, bootstrap_addr=None, is_full_node=True):
         self.address = address  # (host, port)
