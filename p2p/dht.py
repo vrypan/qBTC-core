@@ -1,6 +1,10 @@
 import asyncio
 from kademlia.network import Server
 
+"""
+This is a Kademlia wrapper. It is used by the gossip module
+for peer discovery.
+"""
 class KademliaNode:
     def __init__(self, host: str, port: int, bootstrap: tuple[str, int] | None = None):
         self.host = host
@@ -49,14 +53,16 @@ class KademliaNode:
         print(f"[?] Get key={key} → {value}")
         return value
 
+
+"""
+Can be run as a standaline server, for testing purposes.
+"""
 if __name__ == "__main__":
     import argparse
-
     parser = argparse.ArgumentParser(description="Kademlia DHT Node")
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--bootstrap", type=str, help="host:port of bootstrap node (optional)")
-
     args = parser.parse_args()
     bootstrap_addr = None
     if args.bootstrap:
