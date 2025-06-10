@@ -1,0 +1,19 @@
+syntax = "proto3";
+import "blockchain.proto";
+
+
+// GossipMessage is used to exchange messages between nodes in the network.
+// At the moment only type=BLOCK is supported (gossip a new block), but other
+// types can be supported in the future, without affecting nodes running an
+// older version.
+message GossipMessage {
+    GossipMessageType type = 1;
+    oneof data {
+        Block block = 2;
+    }
+};
+
+enum GossipMessageType {
+    UNKNOWN = 0;
+    BLOCK = 1;
+};

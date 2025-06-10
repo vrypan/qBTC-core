@@ -1,7 +1,9 @@
 syntax = "proto3";
 
 import "google/protobuf/empty.proto";
-import "message.proto";
+
+import "blockchain.proto";
+import "request_response.proto";
 
 service NodeService {
   rpc GetHeight(google.protobuf.Empty) returns (HeightMessage);

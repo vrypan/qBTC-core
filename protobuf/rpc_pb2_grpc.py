@@ -3,8 +3,9 @@
 import grpc
 import warnings
 
+import blockchain_pb2 as blockchain__pb2
 from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
-import message_pb2 as message__pb2
+import request_response_pb2 as request__response__pb2
 
 GRPC_GENERATED_VERSION = '1.72.1'
 GRPC_VERSION = grpc.__version__
@@ -38,17 +39,17 @@ class NodeServiceStub(object):
         self.GetHeight = channel.unary_unary(
                 '/NodeService/GetHeight',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=message__pb2.HeightMessage.FromString,
+                response_deserializer=request__response__pb2.HeightMessage.FromString,
                 _registered_method=True)
         self.GetPeers = channel.unary_unary(
                 '/NodeService/GetPeers',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=message__pb2.PeersMessage.FromString,
+                response_deserializer=request__response__pb2.PeersMessage.FromString,
                 _registered_method=True)
         self.GetBlocks = channel.unary_stream(
                 '/NodeService/GetBlocks',
-                request_serializer=message__pb2.BlocksRequest.SerializeToString,
-                response_deserializer=message__pb2.Block.FromString,
+                request_serializer=request__response__pb2.BlocksRequest.SerializeToString,
+                response_deserializer=blockchain__pb2.Block.FromString,
                 _registered_method=True)
 
 
@@ -79,17 +80,17 @@ def add_NodeServiceServicer_to_server(servicer, server):
             'GetHeight': grpc.unary_unary_rpc_method_handler(
                     servicer.GetHeight,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=message__pb2.HeightMessage.SerializeToString,
+                    response_serializer=request__response__pb2.HeightMessage.SerializeToString,
             ),
             'GetPeers': grpc.unary_unary_rpc_method_handler(
                     servicer.GetPeers,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=message__pb2.PeersMessage.SerializeToString,
+                    response_serializer=request__response__pb2.PeersMessage.SerializeToString,
             ),
             'GetBlocks': grpc.unary_stream_rpc_method_handler(
                     servicer.GetBlocks,
-                    request_deserializer=message__pb2.BlocksRequest.FromString,
-                    response_serializer=message__pb2.Block.SerializeToString,
+                    request_deserializer=request__response__pb2.BlocksRequest.FromString,
+                    response_serializer=blockchain__pb2.Block.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -118,7 +119,7 @@ class NodeService(object):
             target,
             '/NodeService/GetHeight',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            message__pb2.HeightMessage.FromString,
+            request__response__pb2.HeightMessage.FromString,
             options,
             channel_credentials,
             insecure,
@@ -145,7 +146,7 @@ class NodeService(object):
             target,
             '/NodeService/GetPeers',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            message__pb2.PeersMessage.FromString,
+            request__response__pb2.PeersMessage.FromString,
             options,
             channel_credentials,
             insecure,
@@ -171,8 +172,8 @@ class NodeService(object):
             request,
             target,
             '/NodeService/GetBlocks',
-            message__pb2.BlocksRequest.SerializeToString,
-            message__pb2.Block.FromString,
+            request__response__pb2.BlocksRequest.SerializeToString,
+            blockchain__pb2.Block.FromString,
             options,
             channel_credentials,
             insecure,

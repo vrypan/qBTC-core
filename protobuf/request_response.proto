@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+message BlocksRequest {
+  uint64 start_block_number = 2;
+  optional uint64 stop_block_number = 3;
+};
+
+message HeightMessage {
+    uint64 height = 1;
+};
+message PeersMessage {
+    repeated Peer peers = 1;
+};
+message Peer {
+    string address = 1;
+    uint64 height = 2;
+    uint64 last_seen = 3;
+};

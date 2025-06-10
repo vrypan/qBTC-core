@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+message Block {
+    uint32 size = 1;
+    bytes hash = 2;
+    uint32 height = 3;
+    BlockHeader header = 4;
+    uint32 transaction_count = 5;
+    repeated Transaction tx = 6;
+};
+message BlockHeader {
+    // As defined in Bitcoin
+    uint32 version = 1;
+    bytes previous_hash = 2;
+    bytes merkle_root = 3;
+    uint32 timestamp = 4;
+    uint32 difficulty = 5;
+    uint32 nonce = 6;
+}
+message Transaction {
+    // Following Bitcoin's Transaction structure, the transaction hash
+    // is not part of the transaction itself, but is calculated from the
+    // transaction data on each client.
+    bytes version = 1;
+    uint32 inputs_count = 2;
+    repeated Utxo inputs = 3;
+    uint32 outputs_count = 4;
+    repeated Utxo outputs = 5;
+    uint32 locktime = 6;
+};
+
+message Utxo {
+  bytes txid = 1;
+  uint32 index = 2;
+  bytes sender = 3;
+  bytes receiver = 4;
+  uint64 amount = 5;
+  bool spent = 6;
+};
+
+/*
+The following are the messages used to store data in the database.
+They are slightly modified versions of the original messages, to allow more
+efficient reads and writes.
+*/
+message DbBlock {
+    bytes hash = 1;
+    uint32 height = 2;
+    BlockHeader header = 3;
+    uint32 transaction_count = 4;
+    // In the database, we store transaction hashes instead of
+    // the transaction data itself.
+    // Each transaction is stored separately in the database
+    // using the calculated hash as the key.
+    repeated bytes txid = 5;
+};
