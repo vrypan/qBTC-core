@@ -168,3 +168,5 @@ cython_debug/
 node_modules/
 wallet.json
 admin.json
+
+.DS_Store
