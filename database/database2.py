@@ -128,7 +128,9 @@ def utxo_get(address: bytes) -> list[pb.Utxo]:
     prefix = b"addr:" + address + b":"
     utxos = []
 
-    for key, value in _db.iter(prefix=prefix):
+    for key, value in _db.items(from_key=prefix):
+        if not (isinstance(key, bytes) and key.startswith(prefix)):
+            break
         utxo = pb.Utxo()
         utxo.ParseFromString(value)
         utxos.append(utxo)
@@ -157,7 +159,7 @@ def utxo_delete(input: pb.TxInput):
 
     # Delete address-keyed UTXO
     addr_key = b"addr:" + address + b":" + txid[:8] + vout.to_bytes(4, 'big')
-    _db.pop(addr_key, None)
+    _db.delete(addr_key)
 
 def tx_set(tx: pb.Transaction) -> bytes:
     """
@@ -175,7 +177,7 @@ def tx_set(tx: pb.Transaction) -> bytes:
 
     # Delete inputs from UTXOs
     for vin in tx.inputs:
-        utxo_del(vin.txid, vin.vout)
+        utxo_delete(vin)
     # Save the transaction outputs as UTXOs
     for vout, output in enumerate(tx.outputs):
         utxo_set(hash, vout, output)
