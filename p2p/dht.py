@@ -1,39 +1,44 @@
 import asyncio
 from kademlia.network import Server
 
-"""
-This is a Kademlia wrapper. It is used by the gossip module
-for peer discovery.
-"""
 class KademliaNode:
+    """
+    This is a Kademlia wrapper. It is used by the gossip module
+    for peer discovery.
+    """
     def __init__(self, host: str, port: int, bootstrap: tuple[str, int] | None = None):
-        self.host = host
-        self.port = port
-        self.bootstrap = bootstrap
-        self.server = Server()
+        """
+        Initialize a KademliaNode instance.
+        """
+        self._host = host
+        self._port = port
+        self._bootstrap = bootstrap
+        self._server = Server()
 
     async def start(self):
-        await self.server.listen(self.port)
-        print(f"[+] Kademlia node listening on {self.host}:{self.port}")
+        """
+        Starts the Kademlia node.
+        """
+        await self._server.listen(self._port)
+        print(f"[+] Kademlia node listening on {self._host}:{self._port}")
 
-        if self.bootstrap:
-            print(f"[*] Bootstrapping to {self.bootstrap}")
-            await self.server.bootstrap([self.bootstrap])
+        if self._bootstrap:
+            print(f"[*] Bootstrapping to {self._bootstrap}")
+            await self._server.bootstrap([self._bootstrap])
             print("[+] Bootstrapping complete")
 
         # Start periodic peer logging
         asyncio.create_task(self.log_peers())
 
         print("[*] Node is now running. Press Ctrl+C to exit.")
-        # await asyncio.Event().wait()
 
     async def log_peers(self):
         """
         Convinience method to log peers, mostly for debugging.
         """
         while True:
-            if self.server.protocol and self.server.protocol.router:
-                contacts = self.server.protocol.router.find_neighbors(self.server.node)
+            if self._server.protocol and self._server.protocol.router:
+                contacts = self._server.protocol.router.find_neighbors(self._server.node)
                 peer_list = [f"{c.id.hex()}@({c.ip}:{c.port})" for c in contacts]
                 print(f"[#] Known peers ({len(peer_list)}): {peer_list}")
             else:
@@ -41,23 +46,35 @@ class KademliaNode:
             await asyncio.sleep(10)
 
     def get_peers(self) -> list[tuple[str, int]]:
-        if self.server.protocol and self.server.protocol.router:
-            contacts = self.server.protocol.router.find_neighbors(self.server.node)
+        """
+        Returns a list of known peers in the network.
+        """
+        if self._server.protocol and self._server.protocol.router:
+            contacts = self._server.protocol.router.find_neighbors(self._server.node)
             peer_list = [(c.ip, c.port) for c in contacts]
             return peer_list
         else:
             return []
 
     async def stop(self):
-        self.server.stop()
+        """
+        Stops the Kademlia node.
+        """
+        self._server.stop()
         print("[-] Kademlia node stopped")
 
     async def set(self, key: str, value: str):
-        await self.server.set(key, value)
+        """
+        Sets a key-value pair in the Kademlia DHT.
+        """
+        await self._server.set(key, value)
         # print(f"[✓] Set key={key} value={value}")
 
     async def get(self, key: str):
-        value = await self.server.get(key)
+        """
+        Retrieves a value from the Kademlia DHT.
+        """
+        value = await self._server.get(key)
         # print(f"[?] Get key={key} → {value}")
         return value
 

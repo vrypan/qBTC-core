@@ -7,6 +7,9 @@ from protobuf.blockchain_pb2 import (
 )
 
 def random_transaction() -> Transaction:
+    """
+    Generate a random transaction. Used for testing and simulation purposes.
+    """
     tx = Transaction()
     tx.version = os.urandom(4)
 
@@ -31,6 +34,9 @@ def random_transaction() -> Transaction:
     return tx
 
 def random_block(height: int) -> Block:
+    """
+    Generate a random block. Used for testing and simulation purposes.
+    """
     blk = Block()
     blk.height = height
     blk.size = random.randint(512, 2048)
