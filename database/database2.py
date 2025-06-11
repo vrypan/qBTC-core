@@ -1,11 +1,3 @@
-from rocksdict import Rdict, Options
-import logging
-import protobuf.blockchain_pb2 as pb
-from blockchain.utils import address_from_script_pubkey, calculate_tx_hash
-from typing import Optional
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
-
 """
 This is a db wrapper. We are not using locking, because all writes are consistent.
 For example, when writing a transaction to the database, even if multiple processes
@@ -24,16 +16,28 @@ It expects that transactions and blocks stored have already been validated.
 Proper use:
 1. Initialize the database once:
 
+```
 from database import init_db
 init_db("database.db")
+```
 
 2. In every other case, use db_instance() to access the database instance.
 However, accessinng the database instance directly should be rare, since we have
 helper functions to read and write specific datatypes (ex. block_set(), block_get(), etc.)
 
+```
 from database import database2 as db
 last_block = db.tip_get()
+```
 """
+
+from rocksdict import Rdict, Options
+import logging
+import protobuf.blockchain_pb2 as pb
+from blockchain.utils import address_from_script_pubkey, calculate_tx_hash
+from typing import Optional
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 
 __db: Optional[Rdict] = None
 def init_db(path="data.db"):
