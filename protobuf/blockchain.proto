@@ -21,22 +21,26 @@ message Transaction {
     // Following Bitcoin's Transaction structure, the transaction hash
     // is not part of the transaction itself, but is calculated from the
     // transaction data on each client.
+    // An other difference is we do not store input and output counts
+    // because they are not needed by the protobuf.
     bytes version = 1;
-    uint32 inputs_count = 2;
-    repeated Utxo inputs = 3;
-    uint32 outputs_count = 4;
-    repeated Utxo outputs = 5;
-    uint32 locktime = 6;
+    repeated TxInput inputs = 2;
+    repeated TxOutput outputs = 3;
+    uint32 locktime = 4;
 };
 
-message Utxo {
-  bytes txid = 1;
-  uint32 index = 2;
-  bytes sender = 3;
-  bytes receiver = 4;
-  uint64 amount = 5;
-  bool spent = 6;
-};
+message TxInput {
+  bytes txid = 1;              // 32-byte hash of previous transaction
+  uint32 vout = 2;             // Output index in previous transaction
+  bytes script_sig = 3;        // Unlocking script (scriptSig)
+  uint32 sequence = 4;         // Sequence number
+}
+
+// Transaction Output
+message TxOutput {
+  uint64 value = 1;            // Amount in satoshis
+  bytes script_pubkey = 2;     // Locking script (scriptPubKey)
+}
 
 /*
 The following are the messages used to store data in the database.
@@ -54,3 +58,9 @@ message DbBlock {
     // using the calculated hash as the key.
     repeated bytes txid = 5;
 };
+
+message Utxo {
+  bytes txid = 1;
+  uint32 vout = 2;
+  TxOutput output = 3;
+}

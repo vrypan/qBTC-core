@@ -39,36 +39,36 @@ class BlockHeader(_message.Message):
     def __init__(self, version: _Optional[int] = ..., previous_hash: _Optional[bytes] = ..., merkle_root: _Optional[bytes] = ..., timestamp: _Optional[int] = ..., difficulty: _Optional[int] = ..., nonce: _Optional[int] = ...) -> None: ...
 
 class Transaction(_message.Message):
-    __slots__ = ("version", "inputs_count", "inputs", "outputs_count", "outputs", "locktime")
+    __slots__ = ("version", "inputs", "outputs", "locktime")
     VERSION_FIELD_NUMBER: _ClassVar[int]
-    INPUTS_COUNT_FIELD_NUMBER: _ClassVar[int]
     INPUTS_FIELD_NUMBER: _ClassVar[int]
-    OUTPUTS_COUNT_FIELD_NUMBER: _ClassVar[int]
     OUTPUTS_FIELD_NUMBER: _ClassVar[int]
     LOCKTIME_FIELD_NUMBER: _ClassVar[int]
     version: bytes
-    inputs_count: int
-    inputs: _containers.RepeatedCompositeFieldContainer[Utxo]
-    outputs_count: int
-    outputs: _containers.RepeatedCompositeFieldContainer[Utxo]
+    inputs: _containers.RepeatedCompositeFieldContainer[TxInput]
+    outputs: _containers.RepeatedCompositeFieldContainer[TxOutput]
     locktime: int
-    def __init__(self, version: _Optional[bytes] = ..., inputs_count: _Optional[int] = ..., inputs: _Optional[_Iterable[_Union[Utxo, _Mapping]]] = ..., outputs_count: _Optional[int] = ..., outputs: _Optional[_Iterable[_Union[Utxo, _Mapping]]] = ..., locktime: _Optional[int] = ...) -> None: ...
+    def __init__(self, version: _Optional[bytes] = ..., inputs: _Optional[_Iterable[_Union[TxInput, _Mapping]]] = ..., outputs: _Optional[_Iterable[_Union[TxOutput, _Mapping]]] = ..., locktime: _Optional[int] = ...) -> None: ...
 
-class Utxo(_message.Message):
-    __slots__ = ("txid", "index", "sender", "receiver", "amount", "spent")
+class TxInput(_message.Message):
+    __slots__ = ("txid", "vout", "script_sig", "sequence")
     TXID_FIELD_NUMBER: _ClassVar[int]
-    INDEX_FIELD_NUMBER: _ClassVar[int]
-    SENDER_FIELD_NUMBER: _ClassVar[int]
-    RECEIVER_FIELD_NUMBER: _ClassVar[int]
-    AMOUNT_FIELD_NUMBER: _ClassVar[int]
-    SPENT_FIELD_NUMBER: _ClassVar[int]
+    VOUT_FIELD_NUMBER: _ClassVar[int]
+    SCRIPT_SIG_FIELD_NUMBER: _ClassVar[int]
+    SEQUENCE_FIELD_NUMBER: _ClassVar[int]
     txid: bytes
-    index: int
-    sender: bytes
-    receiver: bytes
-    amount: int
-    spent: bool
-    def __init__(self, txid: _Optional[bytes] = ..., index: _Optional[int] = ..., sender: _Optional[bytes] = ..., receiver: _Optional[bytes] = ..., amount: _Optional[int] = ..., spent: bool = ...) -> None: ...
+    vout: int
+    script_sig: bytes
+    sequence: int
+    def __init__(self, txid: _Optional[bytes] = ..., vout: _Optional[int] = ..., script_sig: _Optional[bytes] = ..., sequence: _Optional[int] = ...) -> None: ...
+
+class TxOutput(_message.Message):
+    __slots__ = ("value", "script_pubkey")
+    VALUE_FIELD_NUMBER: _ClassVar[int]
+    SCRIPT_PUBKEY_FIELD_NUMBER: _ClassVar[int]
+    value: int
+    script_pubkey: bytes
+    def __init__(self, value: _Optional[int] = ..., script_pubkey: _Optional[bytes] = ...) -> None: ...
 
 class DbBlock(_message.Message):
     __slots__ = ("hash", "height", "header", "transaction_count", "txid")
@@ -83,3 +83,13 @@ class DbBlock(_message.Message):
     transaction_count: int
     txid: _containers.RepeatedScalarFieldContainer[bytes]
     def __init__(self, hash: _Optional[bytes] = ..., height: _Optional[int] = ..., header: _Optional[_Union[BlockHeader, _Mapping]] = ..., transaction_count: _Optional[int] = ..., txid: _Optional[_Iterable[bytes]] = ...) -> None: ...
+
+class Utxo(_message.Message):
+    __slots__ = ("txid", "vout", "output")
+    TXID_FIELD_NUMBER: _ClassVar[int]
+    VOUT_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_FIELD_NUMBER: _ClassVar[int]
+    txid: bytes
+    vout: int
+    output: TxOutput
+    def __init__(self, txid: _Optional[bytes] = ..., vout: _Optional[int] = ..., output: _Optional[_Union[TxOutput, _Mapping]] = ...) -> None: ...

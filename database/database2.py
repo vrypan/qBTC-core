@@ -2,6 +2,7 @@ from rocksdict import Rdict
 import logging
 from hashlib import sha256
 import protobuf.blockchain_pb2 as pb
+from .utils import extract_address
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 
@@ -88,9 +89,79 @@ def tx_hash(tx: pb.Transaction) -> bytes:
     """
     return sha256(sha256(tx.SerializeToString()).digest()).digest()
 
+def utxo_set(txid: bytes, vout: int, output: pb.TxOutput) -> bytes:
+    """
+    Add a UTXO in the database. The key used is `address:<addr>:<suffix>`
+    This makes it easy to find UTXOs for a given address using range scans.
+
+    When generating `suffix`, we trim txid to 8 bytes to save storage.
+    In theory, there may be collisions, but it is highly unlikely
+    to have the same `<txid[0:8]><vout>` for the same address.
+
+    Args:
+        txid (bytes): The hash of the transaction.
+        vout (int): The index of the output.
+        output (pb.Output): The output to set.
+
+    Returns:
+        bytes: The key of the UTXO saved.
+    """
+    global _db
+    address = extract_address(output.script_pubkey)
+
+
+    key = b"addr:" + address + b":" + txid[0:8] + vout.to_bytes(4, 'big')
+    value = pb.Utxo(txid=txid, vout=vout, output=output).SerializeToString()
+    _db[key] = value
+    return key
+
+def utxo_get(address: bytes) -> list[pb.Utxo]:
+    """
+    Get all UTXOs for a given address.
+
+    Args:
+        address (bytes): The address to get UTXOs for.
+
+    Returns:
+        list[pb.Utxo]: A list of UTXOs.
+    """
+    prefix = b"addr:" + address + b":"
+    utxos = []
+
+    for key, value in _db.iter(prefix=prefix):
+        utxo = pb.Utxo()
+        utxo.ParseFromString(value)
+        utxos.append(utxo)
+    return utxos
+
+def utxo_delete(input: pb.TxInput):
+    """
+    Delete a UTXO based on TxInput, using a tx_lookup(txid) function.
+
+    Args:
+        input (pb.TxInput): The input referencing the UTXO to spend.
+        tx_lookup_fn (Callable): Function that returns a Transaction given txid.
+    """
+    global _db
+    txid = input.txid
+    vout = input.vout
+
+    # Look up the previous transaction
+    tx = tx_get(txid)
+    if tx is None or vout >= len(tx.outputs):
+        raise ValueError("Referenced transaction or output not found")
+    output = tx.outputs[vout]
+
+    # Derive address
+    address = extract_address(output.script_pubkey)
+
+    # Delete address-keyed UTXO
+    addr_key = b"addr:" + address + b":" + txid[:8] + vout.to_bytes(4, 'big')
+    _db.pop(addr_key, None)
+
 def tx_set(tx: pb.Transaction) -> bytes:
     """
-    Set a transaction in the database. The key used is tx:<hash>
+    Set a transaction in the database. The key used is `tx:<hash>`
 
     Args:
         tx (pb.Transaction): The transaction to set.
@@ -101,6 +172,13 @@ def tx_set(tx: pb.Transaction) -> bytes:
     global _db
     hash = tx_hash(tx)
     _db[b"tx:" + hash] = tx.SerializeToString()
+
+    # Delete inputs from UTXOs
+    for vin in tx.inputs:
+        utxo_del(vin.txid, vin.vout)
+    # Save the transaction outputs as UTXOs
+    for vout, output in enumerate(tx.outputs):
+        utxo_set(hash, vout, output)
     return hash
 
 def tx_get(hash: bytes) -> pb.Transaction:
