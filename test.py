@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 from p2p.gossip import GossipNode
+from database.database2 import init_db
 
 
 def parse_args():
@@ -12,11 +13,16 @@ def parse_args():
     return parser.parse_args()
 
 async def main():
+
     args = parse_args()
     bootstrap_address = None
     if args.bootstrap:
         host, port = args.bootstrap.split(":")
         bootstrap_address = (host, int(port))
+    # Rdict can not be opened by multiple processes at the same time
+    # Create a db path based on port, to simplify testing.
+    db_name = f"test_db_{args.port}.db"
+    init_db(db_name)
 
     node = GossipNode(
         address=(args.host, args.port),

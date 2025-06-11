@@ -32,6 +32,13 @@ class Mempool:
     def remove(self, tx_hash: bytes):
         self.tx_map.pop(tx_hash, None)
 
+    def hash_exists(self, tx_hash: bytes) -> bool:
+        return tx_hash in self.tx_map
+
+    def tx_exists(self, tx: Transaction) -> bool:
+        tx_hash = calculate_tx_hash(tx)
+        return tx_hash in self.tx_map
+
     def __len__(self):
         return len(self.tx_map)
 
