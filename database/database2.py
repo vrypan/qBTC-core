@@ -1,7 +1,7 @@
 from rocksdict import Rdict
 import logging
 import protobuf.blockchain_pb2 as pb
-from .utils import address_from_script_pubkey, calculate_tx_hash
+from blockchain.utils import address_from_script_pubkey, calculate_tx_hash
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 
