@@ -1,8 +1,7 @@
 from rocksdict import Rdict
 import logging
-from hashlib import sha256
 import protobuf.blockchain_pb2 as pb
-from .utils import extract_address
+from .utils import address_from_script_pubkey, calculate_tx_hash
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 
@@ -72,23 +71,6 @@ def db_instance() -> Rdict:
         raise RuntimeError("DB not initialized. Call init_db() first.")
     return _db
 
-def tx_hash(tx: pb.Transaction) -> bytes:
-    """
-    Calculate the hash of a transaction.
-
-    Args:
-        tx (pb.Transaction): The transaction to hash.
-
-    Returns:
-        bytes: The hash of the transaction.
-
-    Notes:
-        The transaction is serialized using protobuf's SerializeToString method.
-        A lower-level serialization method must be implemented to ensure immunity
-        against protobuf serialization changes.
-    """
-    return sha256(sha256(tx.SerializeToString()).digest()).digest()
-
 def utxo_set(txid: bytes, vout: int, output: pb.TxOutput) -> bytes:
     """
     Add a UTXO in the database. The key used is `address:<addr>:<suffix>`
@@ -107,7 +89,7 @@ def utxo_set(txid: bytes, vout: int, output: pb.TxOutput) -> bytes:
         bytes: The key of the UTXO saved.
     """
     global _db
-    address = extract_address(output.script_pubkey)
+    address = address_from_script_pubkey(output.script_pubkey)
 
 
     key = b"addr:" + address + b":" + txid[0:8] + vout.to_bytes(4, 'big')
@@ -155,7 +137,7 @@ def utxo_delete(input: pb.TxInput):
     output = tx.outputs[vout]
 
     # Derive address
-    address = extract_address(output.script_pubkey)
+    address = address_from_script_pubkey(output.script_pubkey)
 
     # Delete address-keyed UTXO
     addr_key = b"addr:" + address + b":" + txid[:8] + vout.to_bytes(4, 'big')
@@ -172,7 +154,7 @@ def tx_set(tx: pb.Transaction) -> bytes:
         bytes: The hash of the transaction.
     """
     global _db
-    hash = tx_hash(tx)
+    hash = calculate_tx_hash(tx)
     _db[b"tx:" + hash] = tx.SerializeToString()
 
     # Delete inputs from UTXOs
