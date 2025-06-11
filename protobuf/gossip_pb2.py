@@ -22,18 +22,18 @@ _runtime_version.ValidateProtobufRuntimeVersion(
 _sym_db = _symbol_database.Default()
 
 
-import blockchain_pb2 as blockchain__pb2
+from . import blockchain_pb2 as blockchain__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0cgossip.proto\x1a\x10\x62lockchain.proto\"R\n\rGossipMessage\x12 \n\x04type\x18\x01 \x01(\x0e\x32\x12.GossipMessageType\x12\x17\n\x05\x62lock\x18\x02 \x01(\x0b\x32\x06.BlockH\x00\x42\x06\n\x04\x64\x61ta*+\n\x11GossipMessageType\x12\x0b\n\x07UNKNOWN\x10\x00\x12\t\n\x05\x42LOCK\x10\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0cgossip.proto\x1a\x10\x62lockchain.proto\"w\n\rGossipMessage\x12 \n\x04type\x18\x01 \x01(\x0e\x32\x12.GossipMessageType\x12\x17\n\x05\x62lock\x18\x02 \x01(\x0b\x32\x06.BlockH\x00\x12#\n\x0btransaction\x18\x03 \x01(\x0b\x32\x0c.TransactionH\x00\x42\x06\n\x04\x64\x61ta*<\n\x11GossipMessageType\x12\x0b\n\x07UNKNOWN\x10\x00\x12\t\n\x05\x42LOCK\x10\x01\x12\x0f\n\x0bTRANSACTION\x10\x02\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'gossip_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_GOSSIPMESSAGETYPE']._serialized_start=118
-  _globals['_GOSSIPMESSAGETYPE']._serialized_end=161
+  _globals['_GOSSIPMESSAGETYPE']._serialized_start=155
+  _globals['_GOSSIPMESSAGETYPE']._serialized_end=215
   _globals['_GOSSIPMESSAGE']._serialized_start=34
-  _globals['_GOSSIPMESSAGE']._serialized_end=116
+  _globals['_GOSSIPMESSAGE']._serialized_end=153
 # @@protoc_insertion_point(module_scope)

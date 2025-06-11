@@ -1,12 +1,12 @@
 import asyncio
 import socket
-import time
-import os
 import json
 import logging
 
-from protobuf.message_pb2 import Block, GossipMessage, GossipMessageType
+from protobuf.blockchain_pb2 import Block
+from protobuf.gossip_pb2 import GossipMessage, GossipMessageType
 from .dht import KademliaNode
+from .utils import random_block
 
 BUF_SIZE = 65536
 
@@ -27,7 +27,7 @@ class GossipNode:
         self.bootstrap_addr = bootstrap_addr
         self.is_full_node = is_full_node
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.known_nonces = set()
+        self.known_hashes = set()
 
         # Use our custom KademliaNode wrapper
         self.dht_node = KademliaNode(
@@ -36,52 +36,41 @@ class GossipNode:
             bootstrap=bootstrap_addr
         )
 
-    def random_block(self) -> Block:
-        ''' Create a rendom block, for test purposes
-        '''
-        block = Block(
-            version=1,
-            previous_hash=b"prevhash",
-            block_hash=b"blockhash",
-            merkle_root=b"merkle",
-            timestamp=int(time.time()),
-            bits=0x1d00ffff,
-            nonce=int.from_bytes(os.urandom(4), 'big'),
-            miner_address=b"miner123",
-        )
-        tx = block.tx.add()
-        tx.txid = b"tx1"
-        tx.timestamp = int(time.time())
-        tx.body.msg_str = b"hello"
-        tx.body.pubkey = b"pub"
-        tx.body.signature = b"sig"
-        return block
-
-
     async def gossip_block(self, block: Block):
             message = GossipMessage(
                 type = GossipMessageType.BLOCK,
                 block=block,
             )
             message_bytes = message.SerializeToString()
-            registry_raw = await self.dht_get("peer-registry")
-            if not registry_raw:
-                return
-            peer_keys = json.loads(registry_raw)
-            for key in peer_keys:
-                if key == self.peer_key:
+            peers = self.dht_node.get_peers()
+            for peer in peers:
+                node_data = await self.dht_get(f"peer:{peer[0]}:{peer[1]}")
+                if not node_data:
+                    print(f"[!] Failed to get gossip port for {peer}")
                     continue
                 try:
-                    value = await self.dht_get(key)
-                    if value is None:
-                        raise ValueError("Received None value from DHT")
-                    info = json.loads(value)
-                    ip = key.split(":")[1]
-                    port = info["gossip_port"]
-                    self.sock.sendto(message_bytes, (ip, port))
-                    print(f"[>] {self.address} Gossiped block to {ip}:{port}, nonce={block.nonce}")
+                    node_json = json.loads(node_data)
+                    port = node_json["gossip_port"]
+                    self.sock.sendto(message_bytes, (peer[0], port))
+                    print(f"[>] {self.address} Gossiped block to {peer[0]}:{port}, hash={block.hash.hex()}")
                 except Exception as e:
-                    print(f"[!] Failed to gossip to {key}: {e}")
+                    print(f"[!] Failed to gossip to {peer}: {e}")
+
+    async def republish_loop(self):
+        # Republish the gossip port on DHT, every 60 seconds.
+        # This is a workaround a kademlia DHT limitation, that affects the bootstrap node.
+        while True:
+            peer_key = f"peer:{self.address[0]}:{self.address[1]+1000}"
+            try:
+                # Register the ip:port for DHT, and the gossip port
+                data = json.dumps({
+                    "gossip_port": self.address[1]
+                })
+                await self.dht_set(peer_key, data)
+                print(f"[✓] Set key={peer_key} value={data}")
+            except Exception as e:
+                print(f"DHT set error: {e}")
+            await asyncio.sleep(60)
 
     async def listen_for_blocks(self):
         loop = asyncio.get_running_loop()
@@ -91,16 +80,16 @@ class GossipNode:
             try:
                 message.ParseFromString(data)
                 if message.type == GossipMessageType.BLOCK:
-                    print(f"[<] {self.address} received block from {addr}: nonce={message.block.nonce}")
-                    if message.block.nonce not in self.known_nonces:
-                        self.known_nonces.add(message.block.nonce)
+                    print(f"[<] {self.address} received block from {addr}: hash={message.block.hash.hex()}")
+                    if message.block.hash not in self.known_hashes:
+                        self.known_hashes.add(message.block.hash)
                         await self.gossip_block(message.block)
             except Exception as e:
                 print(f"[!] Failed to parse block from {addr}: {e}")
 
     async def broadcast_loop(self):
         while True:
-            block = self.random_block()
+            block = random_block(height=10)
             await self.gossip_block(block)
             await asyncio.sleep(10)
 
@@ -113,35 +102,12 @@ class GossipNode:
     async def run(self):
         self.sock.bind(self.address)
         self.sock.setblocking(False)
-
         print(f"Listening on {self.address}")
 
-        # Start Kademlia DHT node in background
-        asyncio.create_task(self.dht_node.start())
-        await asyncio.sleep(2)  # Allow DHT time to bootstrap
-
-        self.peer_key = f"peer:{self.address[0]}:{self.address[1]}"
-
-        try:
-            # Register the ip:port for DHT, and the gossip port
-            await self.dht_set(self.peer_key, json.dumps({
-                "gossip_port": self.address[1]
-            }))
-            print(f"{self.address} registered in DHT as {self.peer_key}")
-
-            # Update peer registry
-            registry_raw = await self.dht_get("peer-registry")
-            peer_keys = set(json.loads(registry_raw)) if registry_raw else set()
-            peer_keys.add(self.peer_key)
-            await self.dht_set("peer-registry", json.dumps(list(peer_keys)))
-        except Exception as e:
-            print(f"DHT set error: {e}")
-
-        tasks = [
-            self.listen_for_blocks(),
-            #self.refresh_peers_loop()
-        ]
+        await self.dht_node.start()
+        asyncio.create_task(self.republish_loop())
+        asyncio.create_task(self.listen_for_blocks())
         if self.is_full_node:
-            tasks.append(self.broadcast_loop())
-
-        await asyncio.gather(*tasks)
+            asyncio.create_task(self.broadcast_loop())
+        while True:
+            await asyncio.sleep(3600)

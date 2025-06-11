@@ -25,7 +25,7 @@ class KademliaNode:
         asyncio.create_task(self.log_peers())
 
         print("[*] Node is now running. Press Ctrl+C to exit.")
-        await asyncio.Event().wait()
+        # await asyncio.Event().wait()
 
     async def log_peers(self):
         """
@@ -40,17 +40,25 @@ class KademliaNode:
                 print("[-] Unable to find neighbors: Router or Protocol not initialized properly.")
             await asyncio.sleep(10)
 
+    def get_peers(self) -> list[tuple[str, int]]:
+        if self.server.protocol and self.server.protocol.router:
+            contacts = self.server.protocol.router.find_neighbors(self.server.node)
+            peer_list = [(c.ip, c.port) for c in contacts]
+            return peer_list
+        else:
+            return []
+
     async def stop(self):
         self.server.stop()
         print("[-] Kademlia node stopped")
 
     async def set(self, key: str, value: str):
         await self.server.set(key, value)
-        print(f"[✓] Set key={key} value={value}")
+        # print(f"[✓] Set key={key} value={value}")
 
     async def get(self, key: str):
         value = await self.server.get(key)
-        print(f"[?] Get key={key} → {value}")
+        # print(f"[?] Get key={key} → {value}")
         return value
 
 

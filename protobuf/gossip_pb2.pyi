@@ -1,4 +1,4 @@
-import blockchain_pb2 as _blockchain_pb2
+from . import blockchain_pb2 as _blockchain_pb2
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
@@ -11,13 +11,17 @@ class GossipMessageType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     UNKNOWN: _ClassVar[GossipMessageType]
     BLOCK: _ClassVar[GossipMessageType]
+    TRANSACTION: _ClassVar[GossipMessageType]
 UNKNOWN: GossipMessageType
 BLOCK: GossipMessageType
+TRANSACTION: GossipMessageType
 
 class GossipMessage(_message.Message):
-    __slots__ = ("type", "block")
+    __slots__ = ("type", "block", "transaction")
     TYPE_FIELD_NUMBER: _ClassVar[int]
     BLOCK_FIELD_NUMBER: _ClassVar[int]
+    TRANSACTION_FIELD_NUMBER: _ClassVar[int]
     type: GossipMessageType
     block: _blockchain_pb2.Block
-    def __init__(self, type: _Optional[_Union[GossipMessageType, str]] = ..., block: _Optional[_Union[_blockchain_pb2.Block, _Mapping]] = ...) -> None: ...
+    transaction: _blockchain_pb2.Transaction
+    def __init__(self, type: _Optional[_Union[GossipMessageType, str]] = ..., block: _Optional[_Union[_blockchain_pb2.Block, _Mapping]] = ..., transaction: _Optional[_Union[_blockchain_pb2.Transaction, _Mapping]] = ...) -> None: ...

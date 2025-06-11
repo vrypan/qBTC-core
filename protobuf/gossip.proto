@@ -10,10 +10,12 @@ message GossipMessage {
     GossipMessageType type = 1;
     oneof data {
         Block block = 2;
+        Transaction transaction = 3;
     }
 };
 
 enum GossipMessageType {
     UNKNOWN = 0;
     BLOCK = 1;
+    TRANSACTION = 2;
 };
