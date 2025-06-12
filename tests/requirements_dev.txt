@@ -1,0 +1,4 @@
+pytest
+pytest-asyncio
+pytest-mock        # wrapper around unittest.mock
+freezegun          # optional, freezes time.time()
