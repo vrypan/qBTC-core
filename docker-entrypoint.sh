@@ -17,7 +17,7 @@ import json
 password = os.getenv('WALLET_PASSWORD')
 
 # Force wallet generation or loading
-wallet = get_or_create_wallet(filename='/app/${WALLET_FILE}', password=password)
+wallet = get_or_create_wallet(fname='/app/${WALLET_FILE}', password=password)
 
 print(f'✅ Wallet ready: Address {wallet[\"address\"]}')
 "

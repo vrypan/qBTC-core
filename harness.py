@@ -67,7 +67,7 @@ def main() -> None:
     # -----------------------------------------------------------------------
     # Load or create wallet
     # -----------------------------------------------------------------------
-    w = get_or_create_wallet(filename=args.wallet, password=args.password)
+    w = get_or_create_wallet(fname=args.wallet, password=args.password)
     sender_addr: str = w["address"]
     priv_hex: str = w["privateKey"]
     pub_hex: str = w["publicKey"]
