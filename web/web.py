@@ -7,8 +7,7 @@ from pydantic import BaseModel
 from typing import Dict, List, Set, Optional
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
-from gossip.gossip import sha256d
-from blockchain.blockchain import serialize_transaction
+from blockchain.blockchain import sha256d,serialize_transaction
 from state.state import pending_transactions
 import logging
 import json
