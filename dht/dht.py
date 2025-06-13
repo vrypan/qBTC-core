@@ -1,17 +1,12 @@
 import asyncio
 import json
 import logging
-import aiohttp
 import time
-import socket
-from decimal import Decimal
-from rocksdict import WriteBatch
+import aiohttp
 from kademlia.network import Server as KademliaServer
-from config.config import ADMIN_ADDRESS,GENESIS_ADDRESS, shutdown_event, VALIDATOR_ID, HEARTBEAT_INTERVAL, VALIDATOR_TIMEOUT, VALIDATORS_LIST_KEY, BOOTSTRAP_NODES, DEFAULT_GOSSIP_PORT
+from config.config import  shutdown_event, VALIDATOR_ID, HEARTBEAT_INTERVAL, VALIDATOR_TIMEOUT, VALIDATORS_LIST_KEY, DEFAULT_GOSSIP_PORT
 from state.state import validator_keys, known_validators
-from blockchain.blockchain import calculate_merkle_root
 from database.database import get_db,get_current_height
-from wallet.wallet import verify_transaction
 from sync.sync import process_blocks_from_peer
 
 kad_server = None
@@ -128,7 +123,7 @@ async def push_blocks(peer_ip, peer_port):
         if msg.get("type") == "height_response":
             print(msg)
             peer_height = msg.get("height")
-            peer_tip = msg.get("current_tip")
+            #peer_tip = msg.get("current_tip")
             logging.info(f"*** Peer {peer_ip} responded with height {peer_height}")
 
         # Only push if our height is greater
@@ -274,7 +269,7 @@ async def maintain_validator_list(gossip_node):
 
         # Preload all heartbeats in parallel
         tasks = {v: asyncio.create_task(kad_server.get(f"validator_{v}_heartbeat")) for v in dht_set}
-        for v, task in tasks.items():
+        for v in tasks.items():
             try:
                 last_seen_raw = await kad_server.get(f"validator_{v}_heartbeat")
                 last_seen_str = b2s(last_seen_raw)

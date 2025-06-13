@@ -1,9 +1,8 @@
+import json
 import struct
-from config.config import ADMIN_ADDRESS,GENESIS_ADDRESS, DIFFICULTY_ADJUSTMENT_INTERVAL, BLOCK_TIME_TARGET
 import hashlib
 from typing import Union
 import base58
-import json
 
 def derive_qsafe_address(pubkey: Union[bytes, str]) -> str:
     # Convert pubkey to bytes if it's a string

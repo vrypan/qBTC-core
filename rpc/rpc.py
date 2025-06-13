@@ -1,20 +1,18 @@
-from fastapi import FastAPI, Request, Depends, HTTPException
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from database.database import get_db, get_current_height
-from pydantic import BaseModel
-from typing import Dict, List, Set, Optional
-from decimal import Decimal
-from config.config import ADMIN_ADDRESS
-from wallet.wallet import verify_transaction
-from blockchain.blockchain import derive_qsafe_address,Block, bits_to_target, serialize_transaction,scriptpubkey_to_address, read_varint, parse_tx, validate_pow, sha256d, calculate_merkle_root
-from state.state import blockchain, state_lock, pending_transactions
-from rocksdict import WriteBatch
 import asyncio
 import copy
 import time
 import struct
 import json
+from decimal import Decimal
+from fastapi import FastAPI, Request, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from database.database import get_db, get_current_height
+from config.config import ADMIN_ADDRESS
+from wallet.wallet import verify_transaction
+from blockchain.blockchain import derive_qsafe_address,Block, bits_to_target, serialize_transaction,scriptpubkey_to_address, read_varint, parse_tx, validate_pow, sha256d, calculate_merkle_root
+from state.state import blockchain, state_lock, pending_transactions
+from rocksdict import WriteBatch
+
 
 
 rpc_app = FastAPI()
@@ -100,7 +98,6 @@ async def submit_block(request: Request, data: str) -> dict:
     batch = WriteBatch()  
     txids = []
     tx_list = []
-    transactions = []
     hdr = raw[:80]
     version = struct.unpack_from('<I', hdr, 0)[0]
     prev_block = hdr[4:36][::-1].hex()
@@ -133,7 +130,7 @@ async def submit_block(request: Request, data: str) -> dict:
     future_limit = int(time.time()) + 2*60 # 2 mins in the future
 
     if (timestamp > future_limit):
-         raise HTTPException(400, "Block from the future")
+        raise HTTPException(400, "Block from the future")
 
 
     offset = 80
@@ -170,7 +167,7 @@ async def submit_block(request: Request, data: str) -> dict:
   
 
 
-    for i, tx in enumerate(tx_list, start=1):
+    for tx in enumerate(tx_list, start=1):
         raw_tx = serialize_transaction(tx)
         txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex()
         txids.append(txid)
@@ -180,7 +177,7 @@ async def submit_block(request: Request, data: str) -> dict:
         message_str = tx["body"]["msg_str"]
         pubkey = tx["body"]["pubkey"]
         signature = tx["body"]["signature"]
-        if(verify_transaction(message_str, signature, pubkey) == True):
+        if verify_transaction(message_str, signature, pubkey) is True:
 
             from_ = message_str.split(":")[0]
             to_ = message_str.split(":")[1]
@@ -192,8 +189,6 @@ async def submit_block(request: Request, data: str) -> dict:
             assert derive_qsafe_address(pubkey) == from_,"wrong signer"
 
             for input_ in inputs:
-                input_txid = input_["txid"]
-                input_sender = input_["sender"]
                 input_receiver = input_["receiver"]
                 input_amount = input_["amount"]
                 input_spent = input_["spent"]
@@ -201,10 +196,8 @@ async def submit_block(request: Request, data: str) -> dict:
                     if (input_spent == False):
                         total_available += Decimal(input_amount)
             for output_ in outputs:
-                output_sender = output_["sender"]
                 output_receiver = output_["receiver"]
                 output_amount = output_["amount"]
-                output_spent = output_["spent"]
                 if output_receiver in (to_, ADMIN_ADDRESS):
                     total_required += Decimal(output_amount)
                 else:

@@ -1,19 +1,20 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from database.database import get_db, get_current_height
-from wallet.wallet import  verify_transaction
-from pydantic import BaseModel
-from typing import Dict, List, Set, Optional
-from decimal import Decimal, InvalidOperation
-from datetime import datetime
-from blockchain.blockchain import sha256d,serialize_transaction
-from state.state import pending_transactions
 import logging
 import json
 import base64
 import time
 import asyncio
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
+from typing import Dict, Set, Optional
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.middleware.cors import CORSMiddleware
+from database.database import get_db, get_current_height
+from wallet.wallet import  verify_transaction
+from pydantic import BaseModel
+from blockchain.blockchain import sha256d,serialize_transaction
+from state.state import pending_transactions
+
 
 
 app = FastAPI()
@@ -49,7 +50,7 @@ class WebSocketManager:
 
     async def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
-            subscriptions = self.active_connections.pop(websocket)
+            self.active_connections.pop(websocket)
             for wallet in list(self.wallet_map.keys()):
                 if websocket in self.wallet_map[wallet]:
                     self.wallet_map[wallet].discard(websocket)
@@ -240,6 +241,7 @@ async def simulate_all_transactions():
 
         await websocket_manager.broadcast(update_data, "all_transactions")
         await asyncio.sleep(10)
+
 async def broadcast_to_websocket_clients(message: str):
     # Copy clients to avoid modifying set during iteration
     disconnected_clients = []
@@ -312,15 +314,6 @@ async def simulate_l1_proofs_testnet():
 
 
 
-def generate_bridge_address(wallet_address: str, network: str, direction: str) -> tuple:
-    seed = f"{wallet_address}_{network}_{direction}_{int(time.time())}"
-    hash_bytes = hashlib.sha256(seed.encode()).digest()
-    secret = base64.b64encode(hash_bytes).decode('utf-8')[:16]
-    prefix = "tb1" if network == "testnet" else "bc1"
-    address = f"{prefix}{''.join(random.choices('0123456789abcdefghijklmnopqrstuvwxyz', k=38))}"
-    bridge_addresses[wallet_address] = {"address": address, "secret": secret, "direction": direction, "created_at": datetime.now().isoformat()}
-    return address, secret
-
 @app.get("/balance/{wallet_address}")
 async def get_balance_endpoint(wallet_address: str):
     balance = get_balance(wallet_address)
@@ -358,7 +351,7 @@ async def worker_endpoint(request: Request):
         message_str = message_bytes.decode("utf-8")
         parts = message_str.split(":")
         sender_, receiver_, send_amount = parts[0], parts[1], parts[2]
-        nonce = parts[3] if len(parts) > 3 else str(int(time.time() * 1000))
+        #nonce = parts[3] if len(parts) > 3 else str(int(time.time() * 1000))
         
         if not verify_transaction(message_str, signature_hex, pubkey_hex):
             return {"status": "error", "message": "Invalid signature"}
@@ -425,19 +418,7 @@ async def worker_endpoint(request: Request):
 
     return {"status": "error", "message": "Unsupported request type"}
 
-
-    if payload.get("request_type") == "get_bridge_address":
-        if not request.wallet_address:
-            return {"status": "error", "message": "Wallet address required"}
-        address, secret = generate_bridge_address(
-            request.wallet_address,
-            request.network or "testnet",
-            request.direction or "btc-to-bqs"
-        )
-        return {"status": "success", "message": "Bridge address generated", "address": address, "secret": secret}
-
-    return {"status": "error", "message": "Unsupported request type"}
-
+   
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -454,11 +435,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 if update_type:
                     websocket_manager.subscribe(websocket, update_type, wallet_address if update_type != "all_transactions" else None)
                     if update_type == "combined_update" and wallet_address:
-                        task = asyncio.create_task(simulate_combined_updates(wallet_address))
+                        asyncio.create_task(simulate_combined_updates(wallet_address))
                         logging.debug(f"Started combined_updates task for {wallet_address}")
 
                     if update_type == "all_transactions":
-                        task = asyncio.create_task(simulate_all_transactions())
+                        asyncio.create_task(simulate_all_transactions())
 
                     #elif update_type == "bridge" and wallet_address and data.get("bridge_address") and data.get("secret"):
                     #    asyncio.create_task(simulate_bridge_updates(wallet_address, data["secret"]))
