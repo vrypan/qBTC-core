@@ -33,9 +33,8 @@ import json
 import sys
 import time
 from decimal import Decimal
-from pathlib import Path
-from wallet.wallet import get_or_create_wallet,sign_transaction
 import requests
+from wallet.wallet import get_or_create_wallet,sign_transaction
 
 def b64(data: bytes) -> str:
     return base64.b64encode(data).decode()
