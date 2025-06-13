@@ -14,7 +14,7 @@ import json
 import logging
 
 from protobuf.blockchain_pb2 import Block, Transaction
-from protobuf.gossip_pb2 import GossipMessage, GossipMessageType
+from protobuf.gossip_pb2 import GossipMessage, GossipMessageType, GossipStatusData, GossipTransactionData
 from .dht import KademliaNode
 from blockchain.mempool import mempool
 from blockchain.utils import calculate_tx_hash
@@ -29,7 +29,7 @@ logging.getLogger("kademlia").setLevel(logging.WARNING)
 
 
 class GossipNode:
-    def __init__(self, address, bootstrap_addr=None, is_full_node=True):
+    def __init__(self, host: tuple[str, int], bootstrap: tuple[str, int] | None = None, is_full_node: bool = True):
         """
         Initialize a GossipNode instance.
 
@@ -40,35 +40,17 @@ class GossipNode:
         :param bootstrap_addr: tuple (host, port), optional. The address of the bootstrap node. Default is None.
         :param is_full_node: bool, optional. Whether the node is a full node. Default is True.
         """
-        self._address = address  # (host, port)
-        self._bootstrap_addr = bootstrap_addr
+        self._address = host
+        self._bootstrap = bootstrap
         self._is_full_node = is_full_node
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         # Use our custom KademliaNode wrapper
         self._dht_node = KademliaNode(
-            host=address[0],
-            port=address[1] + 1000,
-            bootstrap=bootstrap_addr
+            host=(self._address[0],self._address[1] + 1000),
+            bootstrap=bootstrap,
+            properties={"gossip_port": self._address[1]}
         )
-
-    async def republish_loop(self):
-        """
-        Republish the gossip port on DHT, every 60 seconds.
-        This is a workaround for a kademlia DHT limitation, that affects the bootstrap node.
-        """
-        while True:
-            peer_key = f"peer:{self._address[0]}:{self._address[1]+1000}"
-            try:
-                # Register the ip:port for DHT, and the gossip port
-                data = json.dumps({
-                    "gossip_port": self._address[1]
-                })
-                await self._dht_node.set(peer_key, data)
-                print(f"[✓] Set key={peer_key} value={data}")
-            except Exception as e:
-                print(f"DHT set error: {e}")
-            await asyncio.sleep(60)
 
     async def gossip_block(self, block: Block):
         """
@@ -97,10 +79,16 @@ class GossipNode:
         """
         Gossip a transaction to all peers in the network.
         """
+        tx_hash = calculate_tx_hash(transaction)
         message = GossipMessage(
             type = GossipMessageType.TRANSACTION,
-            transaction=transaction,
+            transaction_data=GossipTransactionData(
+                transaction=transaction,
+                hash=tx_hash
+            )
         )
+        asyncio.create_task(self.gossip_message(message))
+        """
         message_bytes = message.SerializeToString()
         peers = self._dht_node.get_peers()
         for peer in peers:
@@ -114,8 +102,33 @@ class GossipNode:
                 if f"{peer[0]}:{port}" in exclude_peers:
                     continue
                 self._sock.sendto(message_bytes, (peer[0], port))
-                tx_hash = calculate_tx_hash(transaction)
                 print(f"[<] Gossiped transaction to {peer[0]}:{port}, hash={tx_hash.hex()}")
+            except Exception as e:
+                print(f"[!] Failed to gossip to {peer}: {e}")
+        """
+    async def gossip_message(self, message: GossipMessage, exclude_peers=()):
+        """
+        Gossip a messages to peers in the network.
+        """
+        MAX_PEERS = 3
+        message_bytes = message.SerializeToString()
+        import random
+        peers = self._dht_node.get_peers()
+        if len(peers) > MAX_PEERS:
+            peers = random.sample(peers, MAX_PEERS)
+        for peer in peers:
+            node_data = await self._dht_node.get(f"peer:{peer[0]}:{peer[1]}")
+            if not node_data:
+                print(f"[!] Failed to get gossip port for {peer}")
+                continue
+            try:
+                node_json = json.loads(node_data)
+                port = node_json["gossip_port"]
+                if f"{peer[0]}:{port}" in exclude_peers:
+                    continue
+                self._sock.sendto(message_bytes, (peer[0], port))
+                message_type_str = GossipMessageType.Name(message.type)
+                print(f"[<] {message_type_str} to {peer[0]}:{port}")
             except Exception as e:
                 print(f"[!] Failed to gossip to {peer}: {e}")
 
@@ -129,23 +142,28 @@ class GossipNode:
             message = GossipMessage()
             try:
                 message.ParseFromString(data)
+                message_type_str = GossipMessageType.Name(message.type)
+                if message.type == GossipMessageType.STATUS:
+                    print(f"[>] {message_type_str} from {addr}: mempool_size={message.status_data.mempool_size}, tip={message.status_data.tip_hash.hex()}")
+                    # Add logic here to handle status message
                 if message.type == GossipMessageType.BLOCK:
-                    print(f"[>] {self._address} received block from {addr}: hash={message.block.hash.hex()}")
+                    print(f"[>] {self._address} Block from {addr}: hash={message.block.hash.hex()}")
                     if db.block_exists(message.block.hash):
-                        print(f"[!] Block {message.block.hash.hex()} already exists")
+                        print(f"[#] {message_type_str} {message.block.hash.hex()} already exists")
                     else:
                         db.block_set(message.block)
                 if message.type == GossipMessageType.TRANSACTION:
-                    tx_hash = calculate_tx_hash(message.transaction)
-                    print(f"[>] Received transaction from {addr[0]}:{addr[1]}: hash={tx_hash.hex()}")
+                    tx_hash = message.transaction_data.hash
+                    print(f"[>] {message_type_str} from {addr[0]}:{addr[1]}: hash={tx_hash.hex()}")
                     if mempool.hash_exists(tx_hash):
-                        print(f"[!] Transaction {tx_hash.hex()} already in mempool")
+                        print(f"[#] Transaction {tx_hash.hex()} already in mempool")
                     else:
-                        mempool.add(message.transaction)
+                        mempool.add(message.transaction_data.transaction)
                         print(f"[✓] Added transaction {tx_hash.hex()} to mempool")
-                        asyncio.create_task(self.gossip_transaction(message.transaction, exclude_peers=(f"{addr[0]}:{addr[1]}",)))
+                        # Propagate the transaction to other peers
+                        asyncio.create_task(self.gossip_message(message, exclude_peers=(f"{addr[0]}:{addr[1]}",)))
             except Exception as e:
-                print(f"[!] Failed to parse block from {addr}: {e}")
+                print(f"[!] Failed to parse message from {addr}: {e}")
 
     async def broadcast_loop(self):
         """
@@ -158,6 +176,21 @@ class GossipNode:
             asyncio.create_task(self.gossip_transaction(transaction))
             await asyncio.sleep(10)
 
+    async def broadcast_status(self):
+        """
+        Broadcast node status to peers.
+        """
+        INTERVAL_SECONDS = 60
+        while True:
+            status = GossipStatusData()
+            status.mempool_size = mempool.len()
+            status.tip_hash = db.tip_get().hash
+            message = GossipMessage(
+                type = GossipMessageType.STATUS,
+                status_data=status,
+            )
+            asyncio.create_task(self.gossip_message(message))
+            await asyncio.sleep(INTERVAL_SECONDS)
     async def run(self):
         """
         Run the Gossip node.
@@ -167,8 +200,9 @@ class GossipNode:
         print(f"Listening on {self._address}")
 
         await self._dht_node.start()
-        asyncio.create_task(self.republish_loop())
+        asyncio.create_task(self._dht_node.announce_properties())
         asyncio.create_task(self.listen_for_messages())
+        asyncio.create_task(self.broadcast_status())
         if self._is_full_node:
             asyncio.create_task(self.broadcast_loop())
         while True:

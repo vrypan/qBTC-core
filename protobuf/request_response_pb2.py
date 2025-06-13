@@ -24,19 +24,23 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x16request_response.proto\"a\n\rBlocksRequest\x12\x1a\n\x12start_block_number\x18\x02 \x01(\x04\x12\x1e\n\x11stop_block_number\x18\x03 \x01(\x04H\x00\x88\x01\x01\x42\x14\n\x12_stop_block_number\"\x1f\n\rHeightMessage\x12\x0e\n\x06height\x18\x01 \x01(\x04\"$\n\x0cPeersMessage\x12\x14\n\x05peers\x18\x01 \x03(\x0b\x32\x05.Peer\":\n\x04Peer\x12\x0f\n\x07\x61\x64\x64ress\x18\x01 \x01(\t\x12\x0e\n\x06height\x18\x02 \x01(\x04\x12\x11\n\tlast_seen\x18\x03 \x01(\x04\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x16request_response.proto\"\x07\n\x05\x45mpty\"a\n\rBlocksRequest\x12\x1a\n\x12start_block_number\x18\x02 \x01(\x04\x12\x1e\n\x11stop_block_number\x18\x03 \x01(\x04H\x00\x88\x01\x01\x42\x14\n\x12_stop_block_number\"\x1f\n\rHeightMessage\x12\x0e\n\x06height\x18\x01 \x01(\x04\"$\n\x0cPeersMessage\x12\x14\n\x05peers\x18\x01 \x03(\x0b\x32\x05.Peer\":\n\x04Peer\x12\x0f\n\x07\x61\x64\x64ress\x18\x01 \x01(\t\x12\x0e\n\x06height\x18\x02 \x01(\x04\x12\x11\n\tlast_seen\x18\x03 \x01(\x04\"\"\n\x12MempoolSizeMessage\x12\x0c\n\x04size\x18\x01 \x01(\x04\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'request_response_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_BLOCKSREQUEST']._serialized_start=26
-  _globals['_BLOCKSREQUEST']._serialized_end=123
-  _globals['_HEIGHTMESSAGE']._serialized_start=125
-  _globals['_HEIGHTMESSAGE']._serialized_end=156
-  _globals['_PEERSMESSAGE']._serialized_start=158
-  _globals['_PEERSMESSAGE']._serialized_end=194
-  _globals['_PEER']._serialized_start=196
-  _globals['_PEER']._serialized_end=254
+  _globals['_EMPTY']._serialized_start=26
+  _globals['_EMPTY']._serialized_end=33
+  _globals['_BLOCKSREQUEST']._serialized_start=35
+  _globals['_BLOCKSREQUEST']._serialized_end=132
+  _globals['_HEIGHTMESSAGE']._serialized_start=134
+  _globals['_HEIGHTMESSAGE']._serialized_end=165
+  _globals['_PEERSMESSAGE']._serialized_start=167
+  _globals['_PEERSMESSAGE']._serialized_end=203
+  _globals['_PEER']._serialized_start=205
+  _globals['_PEER']._serialized_end=263
+  _globals['_MEMPOOLSIZEMESSAGE']._serialized_start=265
+  _globals['_MEMPOOLSIZEMESSAGE']._serialized_end=299
 # @@protoc_insertion_point(module_scope)

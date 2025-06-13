@@ -25,9 +25,9 @@ async def main():
     init_db(db_name)
 
     node = GossipNode(
-        address=(args.host, args.port),
+        host=(args.host, args.port),
         is_full_node=args.broadcast,
-        bootstrap_addr=bootstrap_address
+        bootstrap=bootstrap_address
     )
     await node.run()
 

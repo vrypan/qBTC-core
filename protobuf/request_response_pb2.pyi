@@ -6,6 +6,10 @@ from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
+class Empty(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
 class BlocksRequest(_message.Message):
     __slots__ = ("start_block_number", "stop_block_number")
     START_BLOCK_NUMBER_FIELD_NUMBER: _ClassVar[int]
@@ -35,3 +39,9 @@ class Peer(_message.Message):
     height: int
     last_seen: int
     def __init__(self, address: _Optional[str] = ..., height: _Optional[int] = ..., last_seen: _Optional[int] = ...) -> None: ...
+
+class MempoolSizeMessage(_message.Message):
+    __slots__ = ("size",)
+    SIZE_FIELD_NUMBER: _ClassVar[int]
+    size: int
+    def __init__(self, size: _Optional[int] = ...) -> None: ...

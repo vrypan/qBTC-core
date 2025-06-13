@@ -4,10 +4,7 @@ import "blockchain.proto";
 import "request_response.proto";
 
 service NodeService {
-  rpc GetHeight(Empty) returns (HeightMessage);
-  rpc GetPeers(Empty) returns (PeersMessage);
   rpc GetBlocks(BlocksRequest) returns (stream Block);
-
-  rpc GetMempoolTransactions(Empty) returns (stream Transaction);
+  rpc GetMempool(Empty) returns (stream Transaction);
   rpc GetMempoolSize(Empty) returns (MempoolSizeMessage);
 };

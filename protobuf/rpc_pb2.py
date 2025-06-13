@@ -22,18 +22,17 @@ _runtime_version.ValidateProtobufRuntimeVersion(
 _sym_db = _symbol_database.Default()
 
 
-from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 from . import blockchain_pb2 as blockchain__pb2
 from . import request_response_pb2 as request__response__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\trpc.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x10\x62lockchain.proto\x1a\x16request_response.proto2\x9c\x01\n\x0bNodeService\x12\x33\n\tGetHeight\x12\x16.google.protobuf.Empty\x1a\x0e.HeightMessage\x12\x31\n\x08GetPeers\x12\x16.google.protobuf.Empty\x1a\r.PeersMessage\x12%\n\tGetBlocks\x12\x0e.BlocksRequest\x1a\x06.Block0\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\trpc.proto\x1a\x10\x62lockchain.proto\x1a\x16request_response.proto2\x89\x01\n\x0bNodeService\x12%\n\tGetBlocks\x12\x0e.BlocksRequest\x1a\x06.Block0\x01\x12$\n\nGetMempool\x12\x06.Empty\x1a\x0c.Transaction0\x01\x12-\n\x0eGetMempoolSize\x12\x06.Empty\x1a\x13.MempoolSizeMessageb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'rpc_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_NODESERVICE']._serialized_start=85
-  _globals['_NODESERVICE']._serialized_end=241
+  _globals['_NODESERVICE']._serialized_start=56
+  _globals['_NODESERVICE']._serialized_end=193
 # @@protoc_insertion_point(module_scope)

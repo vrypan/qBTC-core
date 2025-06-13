@@ -21,13 +21,10 @@ class Mempool:
         if len(self.tx_map) >= self.limit:
             self.tx_map.popitem(last=False)  # Remove oldest
 
-        self.tx_map[tx_hash] = tx.SerializeToString()
+        self.tx_map[tx_hash] = tx
 
     def get(self, tx_hash: bytes) -> Transaction | None:
-        bytes = self.tx_map.get(tx_hash)
-        if not bytes:
-            return None
-        return Transaction.FromString(bytes)
+        return self.tx_map.get(tx_hash)
 
     def remove(self, tx_hash: bytes):
         self.tx_map.pop(tx_hash, None)
@@ -39,7 +36,7 @@ class Mempool:
         tx_hash = calculate_tx_hash(tx)
         return tx_hash in self.tx_map
 
-    def __len__(self):
+    def len(self):
         return len(self.tx_map)
 
     def all(self) -> list[Transaction]:

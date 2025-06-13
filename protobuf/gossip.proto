@@ -10,12 +10,23 @@ message GossipMessage {
     GossipMessageType type = 1;
     oneof data {
         Block block = 2;
-        Transaction transaction = 3;
+        GossipTransactionData transaction_data = 3;
+        GossipStatusData status_data = 4;
     }
+};
+
+message GossipStatusData {
+    uint32 mempool_size = 1;
+    bytes tip_hash = 2;
+};
+message GossipTransactionData {
+    bytes hash = 1;
+    Transaction transaction = 2;
 };
 
 enum GossipMessageType {
     UNKNOWN = 0;
     BLOCK = 1;
     TRANSACTION = 2;
+    STATUS = 3;
 };
