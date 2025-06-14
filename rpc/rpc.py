@@ -12,6 +12,7 @@ from wallet.wallet import verify_transaction
 from blockchain.blockchain import derive_qsafe_address,Block, bits_to_target, serialize_transaction,scriptpubkey_to_address, read_varint, parse_tx, validate_pow, sha256d, calculate_merkle_root
 from state.state import blockchain, state_lock, pending_transactions
 from rocksdict import WriteBatch
+from sync.sync import get_blockchain_info
 
 # Import security components
 from models.validation import RPCRequest, BlockSubmissionRequest
@@ -69,11 +70,27 @@ async def rpc_handler(request: Request):
             return await get_block_template(data)
         elif method == "submitblock":
             return await submit_block(request, data)
+        elif method == "getblockchaininfo":
+            return await get_blockchain_info_rpc(data)
         else:
             return {"error": "unknown method", "id": data.get("id")}
     except Exception as e:
         logger.error(f"RPC method {method} failed: {str(e)}")
         return {"error": f"RPC method failed: {str(e)}", "id": data.get("id")}
+
+
+async def get_blockchain_info_rpc(data):
+    """Handle getblockchaininfo RPC call"""
+    try:
+        info = get_blockchain_info()
+        return {
+            "result": info,
+            "error": None,
+            "id": data.get("id")
+        }
+    except Exception as e:
+        logger.error(f"getblockchaininfo failed: {str(e)}")
+        return rpc_error(-1, str(e), data.get("id"))
 
 
 async def get_block_template(data):
