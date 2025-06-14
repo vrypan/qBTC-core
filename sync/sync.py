@@ -1,10 +1,10 @@
 from database.database import get_db, get_current_height
 from rocksdict import WriteBatch
-from blockchain.blockchain import Block ,sha256d, calculate_merkle_root, validate_pow
+from blockchain.blockchain import Block ,calculate_merkle_root, validate_pow
 from config.config import ADMIN_ADDRESS, GENESIS_ADDRESS
-from state.state import pending_transactions
 from wallet.wallet import verify_transaction
-import json, logging, time
+import json
+import logging
 from decimal import Decimal, ROUND_DOWN
 
 

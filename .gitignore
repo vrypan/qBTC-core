@@ -7,10 +7,7 @@ __pycache__/
 # C extensions
 *.so
 
-node-modules/
 ledger.rocksdb/
-package.json
-package-lock.json
 
 # Distribution / packaging
 .Python
@@ -164,3 +161,87 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Thumbnails
+.Thumbs.db
+ehthumbs.db
+
+# qBTC specific
+*.json
+!package.json
+!bootstrap.json
+bootstrap_wallet_backup/
+original_bootstrap.json
+funded_wallet.json
+test_wallet.json
+logs/
+*.log
+ledger.rocksdb/
+*.rocksdb/
+
+# Docker
+docker-compose.override.yml
+.dockerignore
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.backup/
+
+# Test artifacts
+test_results/
+coverage/
+.pytest_cache/
+*.coverage
+
+# Security sensitive files
+*.key
+*.pem
+*.cert
+*.crt
+private/
+secrets/
+
+# Editor directories
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Virtual environments
+env/
+venv/
+ENV/
+.venv/
+virtualenv/
+
+# Package files
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Cache directories
+__pycache__/
+*.pyc
+*.pyo
+.cache/
+
+# Documentation build
+docs/_build/
+site/
+
+# Monitoring and metrics
+prometheus_data/
+grafana_data/
+metrics/

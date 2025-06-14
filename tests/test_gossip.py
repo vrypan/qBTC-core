@@ -1,6 +1,4 @@
 # tests/test_gossip.py
-import asyncio
-import json
 import time
 from unittest.mock import AsyncMock
 
@@ -70,9 +68,16 @@ async def test_send_message_retry_and_drop(monkeypatch, node):
         raise ConnectionRefusedError
 
     monkeypatch.setattr("asyncio.open_connection", _always_fail)
+    monkeypatch.setattr("asyncio.wait_for", lambda coro, timeout: coro)  # Let the coroutine fail
 
     peer = ("1.1.1.1", 9999)
     node.dht_peers.add(peer)
-
+    
+    # First 3 calls increment the failure counter
+    for i in range(3):
+        await node._send_message(peer, b"payload")
+        assert peer in node.dht_peers  # Still there
+    
+    # 4th call should remove it (failed_peers[peer] > 3)
     await node._send_message(peer, b"payload")
     assert peer not in node.dht_peers

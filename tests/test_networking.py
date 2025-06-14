@@ -85,7 +85,15 @@ async def test_announce_gossip_port(monkeypatch, mod):
     stored_raw = await mod.kad_server.get(key)
     assert stored_raw is not None
     stored = json.loads(stored_raw)
-    assert stored == {"ip": "198.51.100.7", "port": 9000}
+    # Check the essential fields are correct
+    assert stored["ip"] == "198.51.100.7"
+    assert stored["port"] == 9000
+    assert stored["publicKey"] == "PK"
+    # NAT traversal fields should also be present
+    assert "local_ip" in stored
+    assert "local_port" in stored
+    assert "nat_type" in stored
+    assert "supports_nat_traversal" in stored
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,15 @@ from state.state import validator_keys, known_validators
 from database.database import get_db,get_current_height
 from sync.sync import process_blocks_from_peer
 
+# Import NAT traversal
+try:
+    from network.nat_traversal import nat_traversal, SimpleSTUN
+    NAT_TRAVERSAL_AVAILABLE = True
+except ImportError:
+    nat_traversal = None
+    SimpleSTUN = None
+    NAT_TRAVERSAL_AVAILABLE = False
+
 kad_server = None
 own_ip = None
 
@@ -25,7 +34,7 @@ async def get_external_ip():
             own_ip = await resp.text()
     return own_ip
 
-async def run_kad_server(port, bootstrap_addr=None, wallet=None, gossip_node=None):
+async def run_kad_server(port, bootstrap_addr=None, wallet=None, gossip_node=None, ip_address=None, gossip_port=None):
     global kad_server
     kad_server = KademliaServer()
     await kad_server.listen(port)
@@ -36,9 +45,10 @@ async def run_kad_server(port, bootstrap_addr=None, wallet=None, gossip_node=Non
             logging.info(f"Bootstrapped to {bootstrap_addr}")
     logging.info(f"Validator {VALIDATOR_ID} running DHT on port {port}")
     await register_validator_once()
-    if wallet and gossip_node:
-        ip_address = await get_external_ip()
-        await announce_gossip_port(wallet, ip=ip_address, port=DEFAULT_GOSSIP_PORT, gossip_node=gossip_node)
+    if wallet and gossip_node and ip_address:
+        # Use the provided IP address and gossip port instead of defaults
+        actual_gossip_port = gossip_port if gossip_port else DEFAULT_GOSSIP_PORT
+        await announce_gossip_port(wallet, ip=ip_address, port=actual_gossip_port, gossip_node=gossip_node)
         #if bootstrap_addr:  # Only discover peers if not bootstrap
         #    await discover_peers_once(gossip_node)
     return kad_server
@@ -53,18 +63,68 @@ async def register_validator_once():
     known_validators.clear()
     known_validators.update(existing)
 
-async def announce_gossip_port(wallet, ip="127.0.0.1", port=DEFAULT_GOSSIP_PORT, gossip_node=None, is_bootstrap=False):
+async def announce_gossip_port(wallet, ip="127.0.0.1", port=None, gossip_node=None, is_bootstrap=False):
+    if port is None:
+        port = DEFAULT_GOSSIP_PORT
+    
+    # Determine if we should use NAT traversal
+    external_ip = ip
+    external_port = port
+    nat_type = "direct"
+    
+    # Check if we're in a Docker/private network environment
+    import ipaddress
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+        is_private = ip_obj.is_private
+    except:
+        is_private = False
+    
+    # Only try NAT traversal if:
+    # - NAT traversal is available
+    # - We're not using a private IP (Docker/local network)
+    # - We're not explicitly in bootstrap mode with private IP
+    if NAT_TRAVERSAL_AVAILABLE and nat_traversal and not is_private:
+        # Try UPnP mapping
+        upnp_port = await nat_traversal.setup_upnp(port, 'TCP')
+        if upnp_port and nat_traversal.external_ip:
+            external_ip = nat_traversal.external_ip
+            external_port = upnp_port
+            nat_type = "upnp"
+            logging.info(f"UPnP mapping successful: {ip}:{port} -> {external_ip}:{external_port}")
+        elif SimpleSTUN:
+            # Try STUN as fallback
+            stun_result = await SimpleSTUN.get_external_address(port)
+            if stun_result:
+                external_ip, external_port = stun_result
+                nat_type = "stun"
+                logging.info(f"STUN discovery successful: {external_ip}:{external_port}")
+    elif is_private:
+        logging.info(f"Using private network address {ip}:{port} - NAT traversal not needed")
+    
     key = f"gossip_{VALIDATOR_ID}"
-    #info = {"ip": ip, "port": port, "publicKey": wallet["publicKey"]}
-    info = {"ip": ip, "port": port}
+    # Enhanced info with NAT details
+    info = {
+        "ip": external_ip,
+        "port": external_port,
+        "local_ip": ip,
+        "local_port": port,
+        "nat_type": nat_type,
+        "supports_nat_traversal": NAT_TRAVERSAL_AVAILABLE,
+        "publicKey": wallet.get("publicKey", "")  # Include publicKey for validator_keys
+    }
+    
     for _ in range(5):
         await kad_server.set(key, json.dumps(info))
         stored_value = await kad_server.get(key)
-        if stored_value and json.loads(stored_value) == info:
-            logging.info(f"Announced gossip info: {key} -> {info}")
-            if gossip_node and is_bootstrap:
-                gossip_node.add_peer(ip, port)
-            return
+        if stored_value:
+            stored_info = json.loads(stored_value)
+            # Check if essential fields match
+            if stored_info.get("ip") == info["ip"] and stored_info.get("port") == info["port"]:
+                logging.info(f"Announced gossip info with NAT type '{nat_type}': {key} -> {info}")
+                if gossip_node and is_bootstrap:
+                    gossip_node.add_peer(external_ip, external_port)
+                return
         await asyncio.sleep(2)
     logging.error("Failed to announce gossip port")
 
@@ -79,12 +139,24 @@ async def discover_peers_once(gossip_node):
         gossip_info_json = await kad_server.get(gossip_key)
         if gossip_info_json:
             info = json.loads(gossip_info_json)
-            if (info["ip"] == own_ip):
-                continue
-            peer = (info["ip"], info["port"])
-            gossip_node.add_peer(info["ip"], info["port"])
-            #validator_keys[vid] = info["publicKey"]
-            logging.info(f"Initially connected to peer {vid} at {peer}")
+            
+            # Handle both old format (just ip/port) and new NAT-aware format
+            if isinstance(info, dict):
+                ip = info.get("ip", info.get("external_ip"))
+                port = info.get("port", info.get("external_port"))
+                
+                # Skip if it's our own external IP
+                if ip == own_ip or ip == nat_traversal.external_ip if nat_traversal else False:
+                    continue
+                    
+                # Store full peer info for NAT traversal
+                gossip_node.add_peer(ip, port, peer_info=info)
+                
+                nat_type = info.get("nat_type", "unknown")
+                logging.info(f"Connected to peer {vid} at {ip}:{port} (NAT type: {nat_type})")
+            else:
+                # Old format compatibility
+                logging.warning(f"Old peer info format for {vid}: {info}")
         else:
             logging.warning(f"No gossip info found for validator {vid}")
 
@@ -219,8 +291,10 @@ async def push_blocks(peer_ip, peer_port):
 
 
 
-async def discover_peers_periodically(gossip_node):
+async def discover_peers_periodically(gossip_node, local_ip=None):
     known_peers = set()
+    # Use provided local IP or fall back to global own_ip
+    current_ip = local_ip if local_ip else own_ip
     while not shutdown_event.is_set():
         validators_json = await kad_server.get(VALIDATORS_LIST_KEY)
         validator_ids = json.loads(validators_json) if validators_json else []
@@ -233,8 +307,8 @@ async def discover_peers_periodically(gossip_node):
                 info = json.loads(gossip_info_json)
                 print("*** in discover peers periodically")
                 print(info["ip"])
-                print(own_ip)
-                if (info["ip"] == own_ip):
+                print(current_ip)
+                if (info["ip"] == current_ip):
                     continue
                 peer = (info["ip"], info["port"])
                 if peer not in known_peers:

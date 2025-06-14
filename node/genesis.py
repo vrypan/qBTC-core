@@ -1,7 +1,6 @@
-import time
-import hashlib
 import json
-from gossip.gossip import GENESIS_ADDRESS, ADMIN_ADDRESS
+import os
+from config.config import GENESIS_ADDRESS
 from state.state import blockchain
 
 async def create_genesis_block(db, is_bootstrap: bool, admin_address: str):
@@ -18,7 +17,7 @@ async def create_genesis_block(db, is_bootstrap: bool, admin_address: str):
                 "txid": genesis_tx_id,
                 "utxo_index": 0,
                 "sender": GENESIS_ADDRESS,
-                "receiver":ADMIN_ADDRESS,
+                "receiver": os.getenv("ADMIN_ADDRESS", "bqs1HpmbeSd8nhRpq5zX5df91D3Xy8pSUovmV"),
                 "amount": genesis_amount,
                 "spent": False
             }],

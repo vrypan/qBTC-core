@@ -1,7 +1,6 @@
 import asyncio
 import uuid
 import os
-from decimal import Decimal 
 
 VALIDATOR_ID = str(uuid.uuid4())[:8]
 ROCKSDB_PATH = os.environ.get("ROCKSDB_PATH", "ledger.rocksdb")  
@@ -18,4 +17,4 @@ FEE_PERCENTAGE = float(os.environ.get("FEE_PERCENTAGE", "0.001"))
 DIFFICULTY_ADJUSTMENT_INTERVAL = int(os.environ.get("DIFFICULTY_ADJUSTMENT_INTERVAL", "10"))
 BLOCK_TIME_TARGET = int(os.environ.get("BLOCK_TIME_TARGET", "10"))
 GENESIS_ADDRESS = "bqs1genesis00000000000000000000000000000000"
-ADMIN_ADDRESS = "bqs1HpmbeSd8nhRpq5zX5df91D3Xy8pSUovmV"
+ADMIN_ADDRESS = os.getenv("ADMIN_ADDRESS", "bqs1HpmbeSd8nhRpq5zX5df91D3Xy8pSUovmV")

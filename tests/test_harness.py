@@ -8,7 +8,6 @@ Unit-tests for harness.py
 from importlib import import_module, reload
 import base64
 import sys
-import json
 from decimal import Decimal
 
 import pytest
