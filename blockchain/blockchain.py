@@ -86,7 +86,16 @@ class Block:
 
 
 def serialize_transaction(tx: dict) -> str:
-    tx_data = json.dumps(tx, sort_keys=True)
+    # Create a clean copy without txid field for consistent serialization
+    import copy
+    tx_clean = copy.deepcopy(tx)
+    if "txid" in tx_clean:
+        del tx_clean["txid"]
+    # Also remove txid from outputs if present
+    for output in tx_clean.get("outputs", []):
+        output.pop("txid", None)
+    
+    tx_data = json.dumps(tx_clean, sort_keys=True)
     return tx_data.encode().hex()
 
 def deserialize_transaction(raw_tx: str) -> dict:

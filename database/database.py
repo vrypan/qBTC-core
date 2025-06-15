@@ -1,6 +1,7 @@
 import logging
 import json
 import rocksdict
+from typing import Tuple
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
@@ -8,11 +9,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 db = None
 GENESIS_PREVHASH = "00" * 32
 
-def get_current_height(db):
+def get_current_height(db) -> Tuple[int, str]:
     """
     Return (height, block_hash) of the chain tip.
     Falls back to (0, GENESIS_PREVHASH) if the DB has no blocks yet.
     """
+    # Try to use ChainManager if available
+    try:
+        from blockchain.chain_manager import ChainManager
+        cm = ChainManager()
+        best_hash, best_height = cm.get_best_chain_tip()
+        if best_hash != "00" * 32:  # Not genesis
+            return best_height, best_hash
+    except Exception as e:
+        # ChainManager not available or failed, fall back to old method
+        logging.debug(f"ChainManager not available, using legacy method: {e}")
+    
+    # Legacy method - find highest block
     try:
         tip_block = max(
             (json.loads(v.decode())             # each decoded block dict

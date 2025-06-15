@@ -1,6 +1,5 @@
 # tests/test_gossip.py
 import asyncio
-import json
 import time
 from unittest.mock import AsyncMock
 
@@ -69,10 +68,24 @@ async def test_send_message_retry_and_drop(monkeypatch, node):
     async def _always_fail(*a, **k):
         raise ConnectionRefusedError
 
+    async def _no_sleep(x):
+        return  # Don't sleep at all
+    
     monkeypatch.setattr("asyncio.open_connection", _always_fail)
+    monkeypatch.setattr("asyncio.wait_for", lambda coro, timeout: coro)  # Let the coroutine fail
+    monkeypatch.setattr("asyncio.sleep", _no_sleep)  # Remove exponential backoff delay
 
     peer = ("1.1.1.1", 9999)
     node.dht_peers.add(peer)
-
+    
+    # First 10 calls increment the failure counter
+    for i in range(10):
+        await node._send_message(peer, b"payload")
+        assert peer in node.dht_peers  # Still there
+        assert node.failed_peers[peer] == i + 1
+    
+    # 11th call should trigger warning (failed_peers[peer] > 10)
+    # Note: The current implementation doesn't remove peers anymore, just warns
     await node._send_message(peer, b"payload")
-    assert peer not in node.dht_peers
+    assert peer in node.dht_peers  # Peer is still there but marked as unreachable
+    assert node.failed_peers[peer] == 11

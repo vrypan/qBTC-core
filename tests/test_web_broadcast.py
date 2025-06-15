@@ -46,8 +46,8 @@ def test_broadcast_tx_success(_stub_database):
     # ------------------------------------------------------------------ #
     # 2.  Seed in-memory DB with one coinbase UTXO for the sender        #
     # ------------------------------------------------------------------ #
-    sender   = "bqs_sender_addr"
-    receiver = "bqs_receiver_addr"
+    sender   = "bqs1senderwallet000000000000000000000000"
+    receiver = "bqs1receiverwallet00000000000000000000000"
     amount   = "1"
     db = _stub_database                                 # provided by conftest
     db[b"utxo:coinbase001"] = json.dumps({

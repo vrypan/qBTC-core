@@ -1,0 +1,36 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # qBTC nodes monitoring
+  - job_name: 'qbtc-bootstrap'
+    metrics_path: '/health'
+    static_configs:
+      - targets: ['qbtc-bootstrap:8080']
+        labels:
+          node: 'bootstrap'
+
+  - job_name: 'qbtc-validator1'
+    metrics_path: '/health'
+    static_configs:
+      - targets: ['qbtc-validator1:8080']
+        labels:
+          node: 'validator1'
+
+  - job_name: 'qbtc-validator2'
+    metrics_path: '/health'
+    static_configs:
+      - targets: ['qbtc-validator2:8080']
+        labels:
+          node: 'validator2'
+
+  # Redis monitoring
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['qbtc-redis:6379']

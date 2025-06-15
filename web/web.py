@@ -7,18 +7,46 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Dict, Set, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from database.database import get_db, get_current_height
-from wallet.wallet import  verify_transaction
+from wallet.wallet import verify_transaction
 from pydantic import BaseModel
-from blockchain.blockchain import sha256d,serialize_transaction
+from blockchain.blockchain import sha256d, serialize_transaction
 from state.state import pending_transactions
 
+# Import security components
+from models.validation import (
+    TransactionRequest, WebSocketSubscription
+)
+from errors.exceptions import (
+    ValidationError, InsufficientFundsError, InvalidSignatureError
+)
+from middleware.error_handler import setup_error_handlers
+from security.integrated_security import integrated_security_middleware
+from monitoring.health import health_monitor
+from security.integrated_security import get_security_status, unblock_client, get_client_info
+
+logger = logging.getLogger(__name__)
 
 
-app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+app = FastAPI(title="qBTC Core API", version="1.0.0")
+
+# Setup security middleware
+app.middleware("http")(integrated_security_middleware)
+
+# Setup error handlers
+setup_error_handlers(app)
+
+# CORS - in production, restrict origins
+app.add_middleware(
+    CORSMiddleware, 
+    allow_origins=["*"],  # TODO: Restrict in production
+    allow_credentials=True, 
+    allow_methods=["GET", "POST"],  # Only allow necessary methods
+    allow_headers=["*"]
+)
 websocket_clients: Set[WebSocket] = set()
 
 class WorkerRequest(BaseModel):
@@ -316,45 +344,115 @@ async def simulate_l1_proofs_testnet():
 
 @app.get("/balance/{wallet_address}")
 async def get_balance_endpoint(wallet_address: str):
-    balance = get_balance(wallet_address)
-    return {"wallet_address": wallet_address, "balance": str(balance)}
+    # Validate address format
+    if not wallet_address.startswith('bqs') or len(wallet_address) < 20:
+        raise ValidationError("Invalid wallet address format")
+    
+    try:
+        balance = get_balance(wallet_address)
+        return {"wallet_address": wallet_address, "balance": str(balance)}
+    except Exception as e:
+        logger.error(f"Error getting balance for {wallet_address}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error retrieving balance")
 
 @app.get("/transactions/{wallet_address}")
 async def get_transactions_endpoint(wallet_address: str, limit: int = 50):
-    transactions = get_transactions(wallet_address, limit)
-    return {"wallet_address": wallet_address, "transactions": transactions}
+    # Validate inputs
+    if not wallet_address.startswith('bqs') or len(wallet_address) < 20:
+        raise ValidationError("Invalid wallet address format")
+    
+    if limit < 1 or limit > 1000:
+        raise ValidationError("Limit must be between 1 and 1000")
+    
+    try:
+        transactions = get_transactions(wallet_address, limit)
+        return {"wallet_address": wallet_address, "transactions": transactions}
+    except Exception as e:
+        logger.error(f"Error getting transactions for {wallet_address}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error retrieving transactions")
 
 @app.get("/health")
 async def health_check(request: Request):
-    db = get_db()
-    gossip_client = request.app.state.gossip_client  
-    return {
-        "status": "healthy",
-        "height": get_current_height(db)[0],
-        "peers": len(gossip_client.client_peers) if gossip_client else 0,
-        "pending_txs": len(pending_transactions)
-    }
+    """Prometheus metrics endpoint"""
+    try:
+        gossip_client = getattr(request.app.state, 'gossip_client', None)
+        
+        # Run health checks to update metrics
+        await health_monitor.run_health_checks(gossip_client)
+        
+        # Generate Prometheus metrics
+        metrics, content_type = health_monitor.generate_metrics()
+        
+        from fastapi.responses import Response
+        return Response(
+            content=metrics,
+            media_type=content_type
+        )
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            content={
+                "status": "unhealthy",
+                "message": "Health check system error",
+                "timestamp": time.time()
+            },
+            status_code=503
+        )
 
 @app.post("/worker")
 async def worker_endpoint(request: Request):
+    """Process transaction broadcast requests with validation"""
     db = get_db()
     gossip_client = request.app.state.gossip_client  
 
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        raise ValidationError("Invalid JSON in request body")
+    
+    # Validate request structure
+    if not isinstance(payload, dict) or "request_type" not in payload:
+        raise ValidationError("Missing or invalid request_type")
 
     if payload.get("request_type") == "broadcast_tx":
-        message_bytes = base64.b64decode(payload["message"])
-        signature_bytes = base64.b64decode(payload["signature"])
-        pubkey_bytes = base64.b64decode(payload["pubkey"])
+        # Validate required fields
+        required_fields = ["message", "signature", "pubkey"]
+        for field in required_fields:
+            if field not in payload:
+                raise ValidationError(f"Missing required field: {field}")
+        
+        # Validate using Pydantic model
+        try:
+            tx_request = TransactionRequest(
+                message=payload["message"],
+                signature=payload["signature"],
+                pubkey=payload["pubkey"]
+            )
+        except Exception as e:
+            raise ValidationError(f"Transaction validation failed: {str(e)}")
+        
+        try:
+            message_bytes = base64.b64decode(tx_request.message)
+            signature_bytes = base64.b64decode(tx_request.signature)
+            pubkey_bytes = base64.b64decode(tx_request.pubkey)
+        except Exception:
+            raise ValidationError("Invalid base64 encoding")
+        
         signature_hex = signature_bytes.hex()
         pubkey_hex = pubkey_bytes.hex()
         message_str = message_bytes.decode("utf-8")
-        parts = message_str.split(":")
-        sender_, receiver_, send_amount = parts[0], parts[1], parts[2]
-        #nonce = parts[3] if len(parts) > 3 else str(int(time.time() * 1000))
         
+        parts = message_str.split(":")
+        if len(parts) < 3:
+            raise ValidationError("Invalid message format")
+        
+        sender_, receiver_, send_amount = parts[0], parts[1], parts[2]
+        
+        # Verify transaction signature
         if not verify_transaction(message_str, signature_hex, pubkey_hex):
-            return {"status": "error", "message": "Invalid signature"}
+            raise InvalidSignatureError("Transaction signature verification failed")
 
         inputs = []
         total_available = Decimal("0")
@@ -377,10 +475,10 @@ async def worker_endpoint(request: Request):
         total_required = Decimal(send_amount) + Decimal(miner_fee)
         
         if total_available < total_required:
-            return {
-                "status": "error",
-                "message": f"Insufficient funds: Need {total_required}, have {total_available}"
-            }
+            raise InsufficientFundsError(
+                required=str(total_required),
+                available=str(total_available)
+            )
 
         outputs = [
             {"utxo_index": 0, "sender": sender_, "receiver": receiver_, "amount": str(send_amount), "spent": False},
@@ -415,8 +513,9 @@ async def worker_endpoint(request: Request):
         await gossip_client.randomized_broadcast(transaction)
 
         return {"status": "success", "message": "Transaction broadcast successfully", "tx_id": txid}
-
-    return {"status": "error", "message": "Unsupported request type"}
+    
+    else:
+        raise ValidationError(f"Unsupported request type: {payload.get('request_type')}")
 
    
 
@@ -430,8 +529,18 @@ async def websocket_endpoint(websocket: WebSocket):
             try:
                 data = await websocket.receive_json()
                 logging.debug(f"Received: {data}")
-                update_type = data.get("update_type")
-                wallet_address = data.get("wallet_address")
+                
+                # Validate WebSocket message
+                try:
+                    ws_request = WebSocketSubscription(**data)
+                    update_type = ws_request.update_type
+                    wallet_address = ws_request.wallet_address
+                except Exception as e:
+                    await websocket.send_json({
+                        "error": "validation_error", 
+                        "message": f"Invalid subscription request: {str(e)}"
+                    })
+                    continue
                 if update_type:
                     websocket_manager.subscribe(websocket, update_type, wallet_address if update_type != "all_transactions" else None)
                     if update_type == "combined_update" and wallet_address:
@@ -452,3 +561,54 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logging.error(f"WebSocket error: {str(e)}", exc_info=True)
         await websocket.close(code=1008, reason=f"Server error: {str(e)}")
+
+
+# Security Management Endpoints
+@app.get("/admin/security/status")
+async def get_security_status_endpoint():
+    """Get comprehensive security status (admin only)"""
+    try:
+        status = await get_security_status()
+        return status
+    except Exception as e:
+        logger.error(f"Failed to get security status: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve security status")
+
+@app.post("/admin/security/unblock/{client_ip}")
+async def unblock_client_endpoint(client_ip: str):
+    """Unblock a specific client IP (admin only)"""
+    try:
+        # Validate IP format
+        import ipaddress
+        ipaddress.ip_address(client_ip)
+        
+        success = await unblock_client(client_ip)
+        if success:
+            logger.info(f"Client {client_ip} unblocked by admin")
+            return {"status": "success", "message": f"Client {client_ip} unblocked"}
+        else:
+            return {"status": "error", "message": f"Client {client_ip} not found or not blocked"}
+    except ValueError:
+        raise ValidationError("Invalid IP address format")
+    except Exception as e:
+        logger.error(f"Failed to unblock client {client_ip}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to unblock client")
+
+@app.get("/admin/security/client/{client_ip}")
+async def get_client_info_endpoint(client_ip: str):
+    """Get detailed information about a specific client (admin only)"""
+    try:
+        # Validate IP format
+        import ipaddress
+        ipaddress.ip_address(client_ip)
+        
+        client_info = await get_client_info(client_ip)
+        if client_info:
+            return client_info
+        else:
+            raise HTTPException(status_code=404, detail="Client not found")
+    except ValueError:
+        raise ValidationError("Invalid IP address format")
+    except Exception as e:
+        logger.error(f"Failed to get client info for {client_ip}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve client information")

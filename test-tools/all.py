@@ -1,6 +1,5 @@
 from decimal import Decimal
 from rocksdict import Rdict
-import json
 import sys
 
 ADMIN_ADDRESS = "bqs1HpmbeSd8nhRpq5zX5df91D3Xy8pSUovmV"

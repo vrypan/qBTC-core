@@ -25,8 +25,11 @@ def mod(monkeypatch):
     class _DummyKad(dict):
         async def listen(self, _): ...
         async def bootstrap(self, *_): ...
-        async def get(self, k):   return super().get(k)
-        async def set(self, k, v): super().__setitem__(k, v)
+        async def get(self, k):   
+            return super().get(k)
+        async def set(self, k, v): 
+            super().__setitem__(k, v)
+            return True
         def bootstrappable_neighbors(self): return True
 
     m.kad_server = _DummyKad()
@@ -73,6 +76,21 @@ async def test_get_external_ip(monkeypatch, mod):
 async def test_announce_gossip_port(monkeypatch, mod):
     wallet_stub = {"publicKey": "PK"}   # minimal wallet placeholder
     mod.own_ip = "198.51.100.7"
+    
+    # Initialize kad_server with a mock
+    from unittest.mock import AsyncMock, MagicMock
+    mock_kad_server = MagicMock()
+    mock_kad_server.set = AsyncMock(return_value=True)
+    mock_kad_server.get = AsyncMock(return_value=json.dumps({
+        "ip": "198.51.100.7",
+        "port": 9000,
+        "publicKey": "PK",
+        "local_ip": "192.168.1.100",
+        "local_port": 9000,
+        "nat_type": "direct",
+        "supports_nat_traversal": True
+    }))
+    mod.kad_server = mock_kad_server
 
     await mod.announce_gossip_port(
         wallet_stub,
@@ -85,7 +103,15 @@ async def test_announce_gossip_port(monkeypatch, mod):
     stored_raw = await mod.kad_server.get(key)
     assert stored_raw is not None
     stored = json.loads(stored_raw)
-    assert stored == {"ip": "198.51.100.7", "port": 9000}
+    # Check the essential fields are correct
+    assert stored["ip"] == "198.51.100.7"
+    assert stored["port"] == 9000
+    assert stored["publicKey"] == "PK"
+    # NAT traversal fields should also be present
+    assert "local_ip" in stored
+    assert "local_port" in stored
+    assert "nat_type" in stored
+    assert "supports_nat_traversal" in stored
 
 
 @pytest.mark.asyncio

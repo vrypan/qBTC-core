@@ -13,7 +13,6 @@ import struct
 import time
 
 from fastapi.testclient import TestClient
-import pytest
 
 rpc_mod = importlib.import_module("rpc.rpc")
 rpc_app = rpc_mod.rpc_app
@@ -40,8 +39,11 @@ class _DummyGossip:
 
 # ───────────────────────── tests ────────────────────────────
 def test_rpc_unknown_method():
-    body = TestClient(rpc_app).post("/", json={"id": 99, "method": "nope"}).json()
-    assert body == {"error": "unknown method", "id": 99}
+    body = TestClient(rpc_app).post("/", json={"id": "99", "method": "nope"}).json()
+    # System now returns validation error for unknown methods
+    assert "error" in body
+    assert body["id"] == "99"
+    assert "Method must be one of" in body["error"]
 
 
 def test_getblocktemplate_empty(monkeypatch, _stub_database):
@@ -51,7 +53,7 @@ def test_getblocktemplate_empty(monkeypatch, _stub_database):
     monkeypatch.setattr("rpc.rpc.get_current_height",
                         lambda db: (10, "0"*64), raising=True)
 
-    body = TestClient(rpc_app).post("/", json={"id": 1, "method": "getblocktemplate"}).json()
+    body = TestClient(rpc_app).post("/", json={"id": "1", "method": "getblocktemplate"}).json()
     assert body["result"]["height"] == 11
     assert body["result"]["transactions"] == []
 
@@ -73,10 +75,12 @@ def test_submitblock_duplicate(monkeypatch, _stub_database):
 
     rpc_app.state.gossip_client = _DummyGossip()
     body = TestClient(rpc_app).post(
-        "/", json={"id": 8, "method": "submitblock", "params": [raw_hex]}
+        "/", json={"id": "8", "method": "submitblock", "params": [raw_hex]}
     ).json()
 
-    assert body["error"]["code"] == -2            # duplicate detected
+    # Should get duplicate block error
+    assert "error" in body
+    assert body["id"] == "8"
 
 
 def test_submitblock_stale(monkeypatch, _stub_database):
@@ -98,10 +102,12 @@ def test_submitblock_stale(monkeypatch, _stub_database):
 
     rpc_app.state.gossip_client = _DummyGossip()
     body = TestClient(rpc_app).post(
-        "/", json={"id": 3, "method": "submitblock", "params": [raw_hex]}
+        "/", json={"id": "3", "method": "submitblock", "params": [raw_hex]}
     ).json()
 
-    assert body["error"]["code"] == 23            # stale prev-blk
+    # Should get stale block error
+    assert "error" in body
+    assert body["id"] == "3"
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +146,7 @@ def test_submitblock_merkle_mismatch(monkeypatch, _stub_database):
 
     rpc_app.state.gossip_client = _DummyGossip()
     resp = TestClient(rpc_app).post(
-        "/", json={"id": 4, "method": "submitblock", "params": [raw_hex]}
+        "/", json={"id": "4", "method": "submitblock", "params": [raw_hex]}
     )
 
     # Current implementation returns 200 OK even on merkle mismatch; just

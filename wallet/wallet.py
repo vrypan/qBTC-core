@@ -1,4 +1,10 @@
-import os, sys, json, getpass, logging, base64, hashlib
+import os
+import sys
+import json
+import getpass
+import logging
+import base64
+import hashlib
 from typing import Optional
 import oqs    
 from cryptography.hazmat.primitives import hashes
@@ -124,7 +130,8 @@ def verify_transaction(message: str, sig_hex: str, pub_hex: str) -> bool:
 def get_or_create_wallet(fname=WALLET_FILENAME, password: str | None = None):
     wallet = load_wallet_file(fname)
     if wallet:
-        password = password or getpass.getpass(f"Enter password to unlock {fname}: ")
+        if password is None:
+            password = getpass.getpass(f"Enter password to unlock {fname}: ")
         return unlock_wallet(wallet, password)
 
     if password is None:
