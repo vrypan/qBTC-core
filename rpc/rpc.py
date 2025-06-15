@@ -10,6 +10,7 @@ from database.database import get_db, get_current_height
 from config.config import ADMIN_ADDRESS
 from wallet.wallet import verify_transaction
 from blockchain.blockchain import derive_qsafe_address,Block, bits_to_target, serialize_transaction,scriptpubkey_to_address, read_varint, parse_tx, validate_pow, sha256d, calculate_merkle_root
+from blockchain.difficulty import get_next_bits
 from state.state import blockchain, state_lock, pending_transactions
 from rocksdict import WriteBatch
 from sync.sync import get_blockchain_info
@@ -275,11 +276,15 @@ async def get_block_template(data):
             "id": data["id"]
         }
     
+    # Calculate the appropriate difficulty for the next block
+    next_bits = get_next_bits(db, height)
+    next_target = bits_to_target(next_bits)
+    
     block_template = {
         "version": 1,
         "previousblockhash": f"{previous_block_hash}",
-        "target": f"{bits_to_target(0x1f00ffff):064x}",
-        "bits": f"{0x1f00ffff:08x}", 
+        "target": f"{next_target:064x}",
+        "bits": f"{next_bits:08x}", 
         "curtime": timestamp,
         "height": height + 1,
         "mutable": ["time", "transactions", "prevblock"],

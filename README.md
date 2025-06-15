@@ -312,7 +312,7 @@ Internal/external audits can be found in the audits folder we are working our wa
 - ✅ Fork Choice Rule (longest chain by cumulative difficulty)
 - ✅ Chain reorganization & orphan block management
 - 🔒 TLS + Peer Authentication
-- ⚠️ Difficulty Adjustment Algorithm
+- ✅ Difficulty Adjustment Algorithm
 - 🧮 Fee Market & Miner Incentives
 - 🧹 UTXO Pruning & State Compression
 
