@@ -4,11 +4,13 @@ Implements the longest chain rule (actually highest cumulative difficulty)
 """
 import json
 import logging
+import time
 from typing import Dict, List, Optional, Tuple, Set
 from decimal import Decimal
 from collections import defaultdict
 from database.database import get_db
 from blockchain.blockchain import Block, validate_pow, bits_to_target, sha256d
+from blockchain.difficulty import get_next_bits, validate_block_bits, validate_block_timestamp
 from rocksdict import WriteBatch
 
 logger = logging.getLogger(__name__)
@@ -159,6 +161,27 @@ class ChainManager:
         
         if not is_genesis and not validate_pow(block_obj):
             return False, "Invalid proof of work"
+        
+        # Validate difficulty adjustment (skip for genesis)
+        if not is_genesis and height > 0:
+            # Get the expected difficulty for this height
+            parent_height = height - 1
+            expected_bits = get_next_bits(self.db, parent_height)
+            
+            if not validate_block_bits(block_data["bits"], expected_bits):
+                return False, f"Invalid difficulty bits: expected {expected_bits:#x}, got {block_data['bits']:#x}"
+        
+        # Validate timestamp (skip for genesis)
+        if not is_genesis and prev_hash in self.block_index:
+            parent_info = self.block_index[prev_hash]
+            current_time = int(time.time())
+            
+            if not validate_block_timestamp(
+                block_data["timestamp"],
+                parent_info["timestamp"],
+                current_time
+            ):
+                return False, "Invalid block timestamp"
         
         # Check if we have the parent block
         if prev_hash not in self.block_index and prev_hash != "00" * 32:
