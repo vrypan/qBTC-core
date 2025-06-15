@@ -24,7 +24,7 @@ def process_blocks_from_peer(blocks: list[dict]):
     
     # Wrap entire function to catch any error
     try:
-        _process_blocks_from_peer_impl(blocks)
+        return _process_blocks_from_peer_impl(blocks)
     except Exception as e:
         logging.error(f"CRITICAL ERROR in process_blocks_from_peer: {e}", exc_info=True)
         # Re-raise to maintain original behavior

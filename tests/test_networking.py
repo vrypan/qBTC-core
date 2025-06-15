@@ -76,6 +76,21 @@ async def test_get_external_ip(monkeypatch, mod):
 async def test_announce_gossip_port(monkeypatch, mod):
     wallet_stub = {"publicKey": "PK"}   # minimal wallet placeholder
     mod.own_ip = "198.51.100.7"
+    
+    # Initialize kad_server with a mock
+    from unittest.mock import AsyncMock, MagicMock
+    mock_kad_server = MagicMock()
+    mock_kad_server.set = AsyncMock(return_value=True)
+    mock_kad_server.get = AsyncMock(return_value=json.dumps({
+        "ip": "198.51.100.7",
+        "port": 9000,
+        "publicKey": "PK",
+        "local_ip": "192.168.1.100",
+        "local_port": 9000,
+        "nat_type": "direct",
+        "supports_nat_traversal": True
+    }))
+    mod.kad_server = mock_kad_server
 
     await mod.announce_gossip_port(
         wallet_stub,
