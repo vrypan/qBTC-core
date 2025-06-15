@@ -48,7 +48,8 @@ class GossipNode:
         self.gossip_port = port  # Store for NAT traversal
         self.server = await asyncio.start_server(self.handle_client, host, port, limit=MAX_LINE_BYTES)
         self.server_task = asyncio.create_task(self.server.serve_forever())
-        #self.partition_task = asyncio.create_task(self.check_partition())
+        # Enable partition check to recover failed peers
+        self.partition_task = asyncio.create_task(self.check_partition())
         logging.info(f"Gossip server started on {host}:{port}")
 
     async def handle_client(self, reader: StreamReader, writer: StreamWriter):
@@ -136,7 +137,6 @@ class GossipNode:
 
         print(msg)
 
-
         if timestamp < int(time.time() * 1000) - 60000:  
             print("**** TRANSACTION IS STALE")
             return
@@ -147,6 +147,17 @@ class GossipNode:
                 return
             if not verify_transaction(msg["body"]["msg_str"], msg["body"]["signature"], msg["body"]["pubkey"]):
                 return
+            
+            # Normalize amounts to prevent scientific notation issues
+            if "inputs" in msg:
+                for inp in msg["inputs"]:
+                    if "amount" in inp:
+                        inp["amount"] = str(inp["amount"])
+            if "outputs" in msg:
+                for out in msg["outputs"]:
+                    if "amount" in out:
+                        out["amount"] = str(out["amount"])
+            
             tx_lock = asyncio.Lock()
             
             async with tx_lock:
@@ -157,7 +168,16 @@ class GossipNode:
             self.seen_tx.add(tx_id)
 
         elif msg_type == "blocks_response":
-            process_blocks_from_peer(msg["blocks"])
+            logging.info(f"Received blocks_response from {from_peer}")
+            blocks = msg.get("blocks", [])
+            if blocks:
+                logging.info(f"Processing {len(blocks)} blocks from peer")
+                # Log first block structure for debugging
+                if blocks and len(blocks) > 0:
+                    logging.info(f"First block keys: {list(blocks[0].keys())}")
+                process_blocks_from_peer(blocks)
+            else:
+                logging.warning("Received empty blocks_response")
    
 
         elif msg_type == "get_height":
@@ -223,9 +243,15 @@ class GossipNode:
     async def randomized_broadcast(self, msg_dict):
         peers = self.dht_peers | self.client_peers 
         if not peers:
+            logging.warning("No peers available for broadcast")
             return
         num_peers = max(2, int(len(peers) ** 0.5))
         peers_to_send = random.sample(list(peers), min(len(peers), num_peers))
+        
+        # Log broadcast details
+        msg_type = msg_dict.get("type", "unknown")
+        logging.info(f"Broadcasting {msg_type} to {len(peers_to_send)} peers: {peers_to_send}")
+        
         payload = (json.dumps(msg_dict) + "\n").encode('utf-8')
         results = await asyncio.gather(
             *[self._send_message(p, payload) for p in peers_to_send],
@@ -234,10 +260,12 @@ class GossipNode:
         for peer, result in zip(peers_to_send, results):
             if isinstance(result, Exception):
                 logging.warning(f"broadcast {peer} failed: {result}")
+            else:
+                logging.info(f"Successfully broadcast {msg_type} to {peer}")
 
     async def _send_message(self, peer, payload):
-        # Try direct connection first
-        for attempt in range(2):
+        # Try direct connection with more retries and exponential backoff
+        for attempt in range(5):  # Increased from 2 to 5 attempts
             try:
                 reader, writer = await asyncio.wait_for(
                     asyncio.open_connection(peer[0], peer[1], limit=MAX_LINE_BYTES),
@@ -251,7 +279,8 @@ class GossipNode:
                 return
             except Exception as e:
                 logging.debug(f"Direct connection attempt {attempt + 1} to {peer} failed: {e}")
-                await asyncio.sleep(1)
+                # Exponential backoff: 1s, 2s, 4s, 8s
+                await asyncio.sleep(min(2 ** attempt, 8))
         
         # Try NAT traversal if available and peer supports it
         if NAT_TRAVERSAL_AVAILABLE and peer in self.peer_info:
@@ -279,10 +308,10 @@ class GossipNode:
         
         # All attempts failed
         self.failed_peers[peer] = self.failed_peers.get(peer, 0) + 1
-        if peer in self.dht_peers and self.failed_peers[peer] > 3:
-            self.dht_peers.remove(peer)
-            self.peer_info.pop(peer, None)
-            logging.info(f"Removed failed DHT peer {peer}")
+        if peer in self.dht_peers and self.failed_peers[peer] > 10:  # Increased from 3 to 10
+            # Don't remove peer, just mark it as temporarily unreachable
+            logging.warning(f"Peer {peer} has failed {self.failed_peers[peer]} times, marking as unreachable")
+            # The partition check will attempt to recover this peer
     
     def _is_same_network(self, peer_local_ip: str) -> bool:
         """Check if peer is in same local network"""
@@ -314,33 +343,69 @@ class GossipNode:
         return False
 
     async def check_partition(self):
+        """Periodically check and recover failed peers"""
         while True:
-            alive_peers = sum(1 for peer in self.dht_peers if self.failed_peers.get(peer, 0) < 3)
-            if alive_peers < len(self.dht_peers) // 2 and len(self.dht_peers) > 0:
-                for peer, fails in list(self.failed_peers.items()):
-                    if fails >= 3 and peer in self.dht_peers:
-                        try:
-                            w = await asyncio.open_connection(peer[0], peer[1])
-                            w.write(b"PING\n")
-                            await w.drain()
-                            w.close()
-                            await w.wait_closed()
+            # Check all peers with failures every 30 seconds
+            for peer in list(self.dht_peers):
+                if self.failed_peers.get(peer, 0) > 0:
+                    try:
+                        # Simple ping to check if peer is back online
+                        reader, writer = await asyncio.wait_for(
+                            asyncio.open_connection(peer[0], peer[1]),
+                            timeout=3
+                        )
+                        # Send a get_height request as ping
+                        ping_msg = json.dumps({"type": "get_height", "timestamp": int(time.time() * 1000)}) + "\n"
+                        writer.write(ping_msg.encode('utf-8'))
+                        await writer.drain()
+                        
+                        # Wait for response
+                        response = await asyncio.wait_for(reader.readline(), timeout=3)
+                        if response:
+                            # Peer is back online, reset failure count
                             self.failed_peers[peer] = 0
-                        except Exception:
-                            self.dht_peers.remove(peer)
-                            logging.info(f"Removed partitioned DHT peer {peer}")
-            await asyncio.sleep(60)
+                            logging.info(f"Peer {peer} is back online, resetting failure count")
+                            
+                            # If peer was in synced_peers, trigger sync
+                            if peer in self.synced_peers:
+                                asyncio.create_task(push_blocks(peer[0], peer[1]))
+                        
+                        writer.close()
+                        await writer.wait_closed()
+                    except Exception as e:
+                        logging.debug(f"Peer {peer} still unreachable: {e}")
+                        # Only remove peer after many failures and extended downtime
+                        if self.failed_peers.get(peer, 0) > 20:
+                            self.dht_peers.discard(peer)
+                            self.peer_info.pop(peer, None)
+                            self.synced_peers.discard(peer)
+                            del self.failed_peers[peer]
+                            logging.info(f"Permanently removed peer {peer} after extended downtime")
+            
+            await asyncio.sleep(30)
 
     def add_peer(self, ip: str, port: int, peer_info=None):
         peer = (ip, port)
+        
+        # Reset failure count if peer is being re-added
+        if peer in self.failed_peers:
+            logging.info(f"Resetting failure count for peer {peer} (was {self.failed_peers[peer]})")
+            self.failed_peers[peer] = 0
+        
+        # Always update peer info if provided
+        if peer_info:
+            self.peer_info[peer] = peer_info
+        
         if peer not in self.dht_peers:
             self.dht_peers.add(peer)
-            
-            # Store peer info for NAT traversal
-            if peer_info:
-                self.peer_info[peer] = peer_info
-                
             logging.info(f"Added DHT peer {peer} to validator list")
+            if peer not in self.synced_peers:
+                self.synced_peers.add(peer)
+                asyncio.create_task(push_blocks(ip, port))
+        else:
+            # Peer already exists, but might have been marked as failed
+            logging.info(f"Peer {peer} already in list, ensuring it's active")
+            # Trigger sync if needed
             if peer not in self.synced_peers:
                 self.synced_peers.add(peer)
                 asyncio.create_task(push_blocks(ip, port))

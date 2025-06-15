@@ -21,17 +21,40 @@ def get_chain_manager() -> ChainManager:
 
 def process_blocks_from_peer(blocks: list[dict]):
     logging.info("***** IN GOSSIP MSG RECEIVE BLOCKS RESPONSE")
-    db = get_db()
-    cm = get_chain_manager()
-    raw_blocks = blocks
+    
+    # Wrap entire function to catch any error
+    try:
+        _process_blocks_from_peer_impl(blocks)
+    except Exception as e:
+        logging.error(f"CRITICAL ERROR in process_blocks_from_peer: {e}", exc_info=True)
+        # Re-raise to maintain original behavior
+        raise
 
-    print("**** RAW BLOCkS ****")
-    print(raw_blocks)
-    if isinstance(raw_blocks, dict):
-        raw_blocks = [raw_blocks]
+def _process_blocks_from_peer_impl(blocks: list[dict]):
+    """Actual implementation of process_blocks_from_peer"""
+    
+    try:
+        db = get_db()
+        cm = get_chain_manager()
+        raw_blocks = blocks
 
-    blocks = sorted(raw_blocks, key=lambda b: b["height"])
-    logging.info("Received %d blocks", len(blocks))
+        print("**** RAW BLOCkS ****")
+        print(raw_blocks)
+        
+        # Log the type and structure for debugging
+        logging.info(f"Received blocks type: {type(blocks)}")
+        if blocks and len(blocks) > 0:
+            logging.info(f"First block type: {type(blocks[0])}")
+            logging.info(f"First block keys: {list(blocks[0].keys()) if isinstance(blocks[0], dict) else 'Not a dict'}")
+            
+        if isinstance(raw_blocks, dict):
+            raw_blocks = [raw_blocks]
+
+        blocks = sorted(raw_blocks, key=lambda b: b["height"])
+        logging.info("Received %d blocks", len(blocks))
+    except Exception as e:
+        logging.error(f"Error in process_blocks_from_peer setup: {e}", exc_info=True)
+        raise
 
     accepted_count = 0
     rejected_count = 0
@@ -41,6 +64,10 @@ def process_blocks_from_peer(blocks: list[dict]):
             height = block.get("height")
             block_hash = block.get("block_hash")
             prev_hash = block.get("previous_hash")
+            
+            # Log block structure for debugging
+            logging.info(f"Processing block at height {height} with hash {block_hash}")
+            logging.info(f"Block has bits field: {'bits' in block}")
             
             # Add full_transactions to block if not present
             if "full_transactions" not in block:
@@ -201,6 +228,9 @@ def _process_block_in_chain(block: dict):
 
   
             for out in outputs:
+                # Ensure amount is always stored as string to avoid scientific notation
+                if 'amount' in out:
+                    out['amount'] = str(out['amount'])
                 out_key = f"utxo:{txid}:{out.get('utxo_index', 0)}".encode()
                 batch.put(out_key, json.dumps(out).encode())
 

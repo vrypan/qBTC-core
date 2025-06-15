@@ -59,7 +59,8 @@ class ChainManager:
         # Remove any block that is a parent of another block
         for block_hash, block_info in self.block_index.items():
             prev_hash = block_info["previous_hash"]
-            if prev_hash in potential_tips:
+            # Don't remove genesis (all zeros) from tips
+            if prev_hash in potential_tips and prev_hash != "0" * 64:
                 potential_tips.discard(prev_hash)
         
         self.chain_tips = potential_tips
@@ -122,6 +123,14 @@ class ChainManager:
         Add a new block to the chain
         Returns (success, error_message)
         """
+        # Validate required fields
+        required_fields = ["block_hash", "previous_hash", "height", "version", "merkle_root", "timestamp", "bits", "nonce"]
+        missing_fields = [field for field in required_fields if field not in block_data]
+        if missing_fields:
+            logger.error(f"Missing required fields in block_data: {missing_fields}")
+            logger.error(f"Received block_data keys: {list(block_data.keys())}")
+            return False, f"Missing required fields: {missing_fields}"
+        
         block_hash = block_data["block_hash"]
         prev_hash = block_data["previous_hash"]
         height = block_data["height"]
@@ -131,16 +140,24 @@ class ChainManager:
             return True, None  # Already have this block
         
         # Validate PoW
-        block_obj = Block(
-            block_data["version"],
-            prev_hash,
-            block_data["merkle_root"],
-            block_data["timestamp"],
-            block_data["bits"],
-            block_data["nonce"]
-        )
+        try:
+            block_obj = Block(
+                block_data["version"],
+                prev_hash,
+                block_data["merkle_root"],
+                block_data["timestamp"],
+                block_data["bits"],
+                block_data["nonce"]
+            )
+        except KeyError as e:
+            logger.error(f"Missing required field in block_data: {e}")
+            logger.error(f"Block data keys: {list(block_data.keys())}")
+            raise
         
-        if not validate_pow(block_obj):
+        # Special handling for genesis block
+        is_genesis = block_hash == "0" * 64 and height == 0
+        
+        if not is_genesis and not validate_pow(block_obj):
             return False, "Invalid proof of work"
         
         # Check if we have the parent block

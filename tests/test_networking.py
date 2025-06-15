@@ -25,8 +25,11 @@ def mod(monkeypatch):
     class _DummyKad(dict):
         async def listen(self, _): ...
         async def bootstrap(self, *_): ...
-        async def get(self, k):   return super().get(k)
-        async def set(self, k, v): super().__setitem__(k, v)
+        async def get(self, k):   
+            return super().get(k)
+        async def set(self, k, v): 
+            super().__setitem__(k, v)
+            return True
         def bootstrappable_neighbors(self): return True
 
     m.kad_server = _DummyKad()

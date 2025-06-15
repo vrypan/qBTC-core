@@ -6,7 +6,7 @@ from node.cli import args
 from node.wallet_setup import setup_validator_wallet
 from node.database_setup import setup_database
 from node.genesis import create_genesis_block
-from dht.dht import run_kad_server, announce_gossip_port, update_heartbeat, discover_peers_periodically
+from dht.dht import run_kad_server, announce_gossip_port, update_heartbeat, discover_peers_periodically, maintain_validator_list
 from gossip.gossip import GossipNode
 from config.config import BOOTSTRAP_NODES, VALIDATOR_ID
 from web.web import app
@@ -118,7 +118,7 @@ async def startup():
     await run_kad_server(args.validator_port, bootstrap, wallet=validator_wallet, gossip_node=gossip_client, ip_address=ip_address, gossip_port=args.gossip_port)
     await gossip_client.start_server(port=args.gossip_port)
 
-    await announce_gossip_port(wallet=validator_wallet, ip=ip_address, port=args.gossip_port)
+    # Note: announce_gossip_port is already called in run_kad_server, no need to call it again
 
     # Save gossip_client into FastAPI apps
     app.state.gossip_client = gossip_client
@@ -127,7 +127,8 @@ async def startup():
     # Background tasks
     tasks = [
         asyncio.create_task(update_heartbeat()),
-        asyncio.create_task(discover_peers_periodically(gossip_client, ip_address))
+        asyncio.create_task(discover_peers_periodically(gossip_client, ip_address)),
+        asyncio.create_task(maintain_validator_list(gossip_client))
     ]
 
 async def shutdown():

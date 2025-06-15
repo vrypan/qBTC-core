@@ -38,13 +38,45 @@ async def run_kad_server(port, bootstrap_addr=None, wallet=None, gossip_node=Non
     global kad_server
     kad_server = KademliaServer()
     await kad_server.listen(port)
+    
     if bootstrap_addr:
-        bootstrap_addr = [addr for addr in bootstrap_addr if addr[1] != port]
+        # Resolve hostnames to IPs if needed
+        resolved_bootstrap = []
+        for addr in bootstrap_addr:
+            if isinstance(addr[0], str) and not addr[0].replace('.', '').isdigit():
+                # It's a hostname, resolve it
+                try:
+                    import socket
+                    ip = socket.gethostbyname(addr[0])
+                    resolved_bootstrap.append((ip, addr[1]))
+                    logging.info(f"Resolved {addr[0]} to {ip}")
+                except Exception as e:
+                    logging.error(f"Failed to resolve {addr[0]}: {e}")
+                    # In Docker, try using the hostname directly
+                    resolved_bootstrap.append(addr)
+            else:
+                resolved_bootstrap.append(addr)
+        
+        # Filter out our own address from bootstrap list
+        bootstrap_addr = [addr for addr in resolved_bootstrap if addr[1] != port]
         if bootstrap_addr:
             await kad_server.bootstrap(bootstrap_addr)
             logging.info(f"Bootstrapped to {bootstrap_addr}")
+            
+            # Verify bootstrap success
+            await asyncio.sleep(2)
+            neighbors = kad_server.bootstrappable_neighbors()
+            if not neighbors:
+                logging.warning("Bootstrap may have failed - no neighbors found")
+            else:
+                logging.info(f"Bootstrap successful - {len(neighbors)} neighbors found")
+    
     logging.info(f"Validator {VALIDATOR_ID} running DHT on port {port}")
+    
+    # Wait a bit more before registering to ensure DHT is ready
+    await asyncio.sleep(2)
     await register_validator_once()
+    
     if wallet and gossip_node and ip_address:
         # Use the provided IP address and gossip port instead of defaults
         actual_gossip_port = gossip_port if gossip_port else DEFAULT_GOSSIP_PORT
@@ -54,16 +86,35 @@ async def run_kad_server(port, bootstrap_addr=None, wallet=None, gossip_node=Non
     return kad_server
 
 async def register_validator_once():
-    existing_json = b2s(await kad_server.get(VALIDATORS_LIST_KEY))
-    existing = set(json.loads(existing_json)) if existing_json else set()
-    if VALIDATOR_ID not in existing:
-        existing.add(VALIDATOR_ID)
-        await kad_server.set(VALIDATORS_LIST_KEY, json.dumps(list(existing)))
-        logging.info(f"Validator joined: {VALIDATOR_ID}")
-    known_validators.clear()
-    known_validators.update(existing)
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            existing_json = b2s(await kad_server.get(VALIDATORS_LIST_KEY))
+            existing = set(json.loads(existing_json)) if existing_json else set()
+            
+            if VALIDATOR_ID not in existing:
+                existing.add(VALIDATOR_ID)
+                await kad_server.set(VALIDATORS_LIST_KEY, json.dumps(list(existing)))
+                logging.info(f"Validator joined: {VALIDATOR_ID}")
+            else:
+                logging.info(f"Validator {VALIDATOR_ID} already registered")
+            
+            known_validators.clear()
+            known_validators.update(existing)
+            return  # Success
+            
+        except Exception as e:
+            logging.error(f"Registration attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+            else:
+                logging.error(f"Failed to register validator after {max_retries} attempts")
 
 async def announce_gossip_port(wallet, ip="127.0.0.1", port=None, gossip_node=None, is_bootstrap=False):
+    if not kad_server:
+        logging.error("Cannot announce gossip port: kad_server not initialized")
+        return
+    
     if port is None:
         port = DEFAULT_GOSSIP_PORT
     
@@ -114,19 +165,27 @@ async def announce_gossip_port(wallet, ip="127.0.0.1", port=None, gossip_node=No
         "publicKey": wallet.get("publicKey", "")  # Include publicKey for validator_keys
     }
     
-    for _ in range(5):
-        await kad_server.set(key, json.dumps(info))
-        stored_value = await kad_server.get(key)
-        if stored_value:
-            stored_info = json.loads(stored_value)
-            # Check if essential fields match
-            if stored_info.get("ip") == info["ip"] and stored_info.get("port") == info["port"]:
-                logging.info(f"Announced gossip info with NAT type '{nat_type}': {key} -> {info}")
-                if gossip_node and is_bootstrap:
-                    gossip_node.add_peer(external_ip, external_port)
-                return
+    for attempt in range(5):
+        try:
+            logging.info(f"Attempting to announce gossip port (attempt {attempt+1}/5): {key} -> {info}")
+            await kad_server.set(key, json.dumps(info))
+            stored_value = await kad_server.get(key)
+            if stored_value:
+                stored_info = json.loads(stored_value)
+                # Check if essential fields match
+                if stored_info.get("ip") == info["ip"] and stored_info.get("port") == info["port"]:
+                    logging.info(f"Successfully announced gossip info with NAT type '{nat_type}': {key} -> {info}")
+                    if gossip_node and is_bootstrap:
+                        gossip_node.add_peer(external_ip, external_port)
+                    return
+                else:
+                    logging.warning(f"Stored info doesn't match: expected {info}, got {stored_info}")
+            else:
+                logging.warning(f"Failed to retrieve stored value for {key}")
+        except Exception as e:
+            logging.error(f"Error during gossip announcement: {e}")
         await asyncio.sleep(2)
-    logging.error("Failed to announce gossip port")
+    logging.error("Failed to announce gossip port after 5 attempts")
 
 async def discover_peers_once(gossip_node):
     validators_json = await kad_server.get(VALIDATORS_LIST_KEY)
@@ -250,7 +309,9 @@ async def push_blocks(peer_ip, peer_port):
                 "blocks": blocks_to_send,
                 "timestamp": int(time.time() * 1000)
             }
-            w.write((json.dumps(blocks_message) + "\n").encode('utf-8'))
+            message_json = json.dumps(blocks_message)
+            print(f"Sending message of {len(message_json)} bytes to {peer_ip}")
+            w.write((message_json + "\n").encode('utf-8'))
             await w.drain()
             print(f"Sent {len(blocks_to_send)} blocks to {peer_ip}")
         
@@ -296,37 +357,55 @@ async def discover_peers_periodically(gossip_node, local_ip=None):
     # Use provided local IP or fall back to global own_ip
     current_ip = local_ip if local_ip else own_ip
     while not shutdown_event.is_set():
-        validators_json = await kad_server.get(VALIDATORS_LIST_KEY)
-        validator_ids = json.loads(validators_json) if validators_json else []
-        for vid in validator_ids:
-            if vid == VALIDATOR_ID:
-                continue
-            gossip_key = f"gossip_{vid}"
-            gossip_info_json = await kad_server.get(gossip_key)
-            if gossip_info_json:
-                info = json.loads(gossip_info_json)
-                print("*** in discover peers periodically")
-                print(info["ip"])
-                print(current_ip)
-                if (info["ip"] == current_ip):
+        try:
+            validators_json = await kad_server.get(VALIDATORS_LIST_KEY)
+            validator_ids = json.loads(validators_json) if validators_json else []
+            print("*** in discover peers periodically")
+            logging.info(f"Discovered {len(validator_ids)} validators in DHT")
+            
+            for vid in validator_ids:
+                if vid == VALIDATOR_ID:
                     continue
-                peer = (info["ip"], info["port"])
-                if peer not in known_peers:
-                    gossip_node.add_peer(info["ip"], info["port"])
-                    #validator_keys[vid] = info["publicKey"]
-                    logging.info(f"Connected to peer {vid} at {peer}")
-                    #await push_blocks(info["ip"],info["port"])
-
-                    known_peers.add(peer)
-            else:
-                logging.warning(f"No gossip info found for validator {vid}")
+                gossip_key = f"gossip_{vid}"
+                gossip_info_json = await kad_server.get(gossip_key)
+                if gossip_info_json:
+                    info = json.loads(gossip_info_json)
+                    print("*** in discover peers periodically")
+                    print(info.get("ip", info.get("external_ip", "unknown")))
+                    print(current_ip)
+                    
+                    # Handle both old and new format
+                    ip = info.get("ip", info.get("external_ip"))
+                    port = info.get("port", info.get("external_port"))
+                    
+                    if ip == current_ip:
+                        continue
+                    peer = (ip, port)
+                    
+                    # Always call add_peer - it will handle re-adding failed peers
+                    gossip_node.add_peer(ip, port, peer_info=info)
+                    
+                    if peer not in known_peers:
+                        logging.info(f"Connected to peer {vid} at {peer}")
+                        known_peers.add(peer)
+                    else:
+                        # Peer already known, but add_peer will reset failure count if needed
+                        logging.debug(f"Re-checking peer {vid} at {peer}")
+                else:
+                    logging.warning(f"No gossip info found for validator {vid}")
+        except Exception as e:
+            logging.error(f"Error in discover_peers_periodically: {e}")
         await asyncio.sleep(5)
 
 async def update_heartbeat():
     heartbeat_key = f"validator_{VALIDATOR_ID}_heartbeat"
     while not shutdown_event.is_set():
-        if kad_server.bootstrappable_neighbors():
+        try:
+            # Always try to update heartbeat, not just when bootstrapped
             await kad_server.set(heartbeat_key, str(time.time()))
+            logging.debug(f"Updated heartbeat for {VALIDATOR_ID}")
+        except Exception as e:
+            logging.warning(f"Failed to update heartbeat: {e}")
         await asyncio.sleep(HEARTBEAT_INTERVAL)
 
 async def maintain_validator_list(gossip_node):
@@ -341,9 +420,8 @@ async def maintain_validator_list(gossip_node):
         current_time = time.time()
         alive = set()
 
-        # Preload all heartbeats in parallel
-        tasks = {v: asyncio.create_task(kad_server.get(f"validator_{v}_heartbeat")) for v in dht_set}
-        for v in tasks.items():
+        # Check heartbeats for all validators
+        for v in dht_set:
             try:
                 last_seen_raw = await kad_server.get(f"validator_{v}_heartbeat")
                 last_seen_str = b2s(last_seen_raw)
@@ -370,11 +448,17 @@ async def maintain_validator_list(gossip_node):
                 gossip_info_json = await kad_server.get(f"gossip_{v}")
                 if gossip_info_json:
                     info = json.loads(gossip_info_json)
-                    if info["ip"] != own_ip:
-                        gossip_node.add_peer(info["ip"], info["port"])
-                        #await push_blocks(info["ip"], info["port"])
-                        validator_keys[v] = info["publicKey"]
-                        logging.info(f"New validator joined: {v} at {info['ip']}:{info['port']}")
+                    # Handle both old and new format
+                    ip = info.get("ip", info.get("external_ip"))
+                    port = info.get("port", info.get("external_port"))
+                    public_key = info.get("publicKey", "")
+                    
+                    if ip and port and ip != own_ip:
+                        gossip_node.add_peer(ip, port, peer_info=info)
+                        #await push_blocks(ip, port)
+                        if public_key:
+                            validator_keys[v] = public_key
+                        logging.info(f"New validator joined: {v} at {ip}:{port}")
             except Exception as e:
                 logging.warning(f"Failed to process new validator {v}: {e}")
 
@@ -385,7 +469,11 @@ async def maintain_validator_list(gossip_node):
                 gossip_info_json = await kad_server.get(f"gossip_{v}")
                 if gossip_info_json:
                     info = json.loads(gossip_info_json)
-                    gossip_node.remove_peer(info["ip"], info["port"])
+                    # Handle both old and new format
+                    ip = info.get("ip", info.get("external_ip"))
+                    port = info.get("port", info.get("external_port"))
+                    if ip and port:
+                        gossip_node.remove_peer(ip, port)
                 validator_keys.pop(v, None)
                 logging.info(f"Validator left: {v}")
             except Exception as e:

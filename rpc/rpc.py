@@ -72,7 +72,16 @@ async def rpc_handler(request: Request):
             return await submit_block(request, data)
         elif method == "getblockchaininfo":
             return await get_blockchain_info_rpc(data)
+        elif method == "getmininginfo":
+            return await get_mining_info(data)
+        elif method == "getnetworkinfo":
+            return await get_network_info(data)
+        elif method == "getpeerinfo":
+            return await get_peer_info(request, data)
+        elif method == "getwork":
+            return await get_work(data)
         else:
+            logger.warning(f"Unknown RPC method requested: {method}")
             return {"error": "unknown method", "id": data.get("id")}
     except Exception as e:
         logger.error(f"RPC method {method} failed: {str(e)}")
@@ -93,23 +102,163 @@ async def get_blockchain_info_rpc(data):
         return rpc_error(-1, str(e), data.get("id"))
 
 
+async def get_mining_info(data):
+    """Handle getmininginfo RPC call - required for cpuminer"""
+    try:
+        db = get_db()
+        height, _ = get_current_height(db)
+        
+        # Calculate network hash rate (simplified - blocks per hour * difficulty)
+        # In production, this would analyze recent blocks
+        current_difficulty = 1.0  # Simplified for now
+        network_hashps = 1000000  # 1 MH/s placeholder
+        
+        # Count pending transactions
+        pooled_tx_count = len(pending_transactions)
+        
+        result = {
+            "blocks": height if height is not None else 0,
+            "difficulty": current_difficulty,
+            "networkhashps": network_hashps,
+            "pooledtx": pooled_tx_count,
+            "chain": "main",  # qBTC main chain
+            "warnings": ""
+        }
+        
+        return {
+            "result": result,
+            "error": None,
+            "id": data.get("id")
+        }
+    except Exception as e:
+        logger.error(f"getmininginfo failed: {str(e)}")
+        return rpc_error(-1, str(e), data.get("id"))
+
+
+async def get_network_info(data):
+    """Handle getnetworkinfo RPC call"""
+    try:
+        result = {
+            "version": 1000000,  # Protocol version
+            "subversion": "/qBTC:1.0.0/",
+            "protocolversion": 70015,  # Bitcoin protocol version
+            "localservices": "0000000000000000",
+            "localrelay": True,
+            "timeoffset": 0,
+            "networkactive": True,
+            "connections": 0,  # Would need gossip_client info
+            "networks": [{
+                "name": "ipv4",
+                "limited": False,
+                "reachable": True,
+                "proxy": "",
+                "proxy_randomize_credentials": False
+            }],
+            "relayfee": 0.00001000,
+            "incrementalfee": 0.00001000,
+            "localaddresses": [],
+            "warnings": ""
+        }
+        
+        return {
+            "result": result,
+            "error": None,
+            "id": data.get("id")
+        }
+    except Exception as e:
+        logger.error(f"getnetworkinfo failed: {str(e)}")
+        return rpc_error(-1, str(e), data.get("id"))
+
+
+async def get_peer_info(request, data):
+    """Handle getpeerinfo RPC call"""
+    try:
+        # Get gossip client to check peer connections
+        gossip_client = getattr(request.app.state, 'gossip_client', None)
+        peers = []
+        
+        if gossip_client:
+            # Get peer info from gossip client
+            # This is simplified - would need to expose peer info from gossip_client
+            for peer_addr, peer_info in getattr(gossip_client, 'peers', {}).items():
+                peers.append({
+                    "id": len(peers),
+                    "addr": f"{peer_addr[0]}:{peer_addr[1]}",
+                    "addrlocal": "127.0.0.1:8333",
+                    "services": "0000000000000000",
+                    "relaytxes": True,
+                    "lastsend": int(time.time()),
+                    "lastrecv": int(time.time()),
+                    "bytessent": 0,
+                    "bytesrecv": 0,
+                    "conntime": int(time.time()) - 3600,  # Connected 1 hour ago
+                    "timeoffset": 0,
+                    "pingtime": 0.001,
+                    "minping": 0.001,
+                    "version": 70015,
+                    "subver": "/qBTC:1.0.0/",
+                    "inbound": False,
+                    "addnode": False,
+                    "startingheight": 0,
+                    "banscore": 0,
+                    "synced_headers": -1,
+                    "synced_blocks": -1,
+                    "inflight": [],
+                    "whitelisted": False,
+                    "permissions": [],
+                    "minfeefilter": 0.00001000,
+                    "bytessent_per_msg": {},
+                    "bytesrecv_per_msg": {}
+                })
+        
+        return {
+            "result": peers,
+            "error": None,
+            "id": data.get("id")
+        }
+    except Exception as e:
+        logger.error(f"getpeerinfo failed: {str(e)}")
+        return rpc_error(-1, str(e), data.get("id"))
+
+
+async def get_work(data):
+    """Handle getwork RPC call - legacy mining protocol"""
+    try:
+        logger.info("getwork called - legacy protocol")
+        # For now, return an error indicating to use getblocktemplate
+        return rpc_error(-1, "getwork is deprecated, please use getblocktemplate", data.get("id"))
+    except Exception as e:
+        logger.error(f"getwork failed: {str(e)}")
+        return rpc_error(-1, str(e), data.get("id"))
+
+
 async def get_block_template(data):
     print(data)
     db = get_db()
     timestamp = int(time.time())
     height, previous_block_hash = get_current_height(db)
+    logger.info(f"get_block_template: height={height}, previous_block_hash={previous_block_hash}")
     transactions = []
     txids = [] 
 
     # Include pending transactions in the block template
     for orig_tx in pending_transactions.values():
         tx = copy.deepcopy(orig_tx)
-        txid = tx["txid"]
+        txid = tx.get("txid")  # Get the txid if it exists
+        
+        # Remove txid from transaction and outputs before serialization
         if "txid" in tx:
             del tx["txid"]
         for output in tx.get("outputs", []):
             output.pop("txid", None)
-        raw_tx = serialize_transaction(tx)
+        
+        # If no txid was present, calculate it
+        if not txid:
+            raw_tx = serialize_transaction(tx)
+            txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex()
+        else:
+            raw_tx = serialize_transaction(tx)
+        
         transactions.append({
             "data": raw_tx,  
             "txid": txid
@@ -117,6 +266,15 @@ async def get_block_template(data):
         txids.append(txid) 
 
 
+    # Handle case where we're at genesis
+    if height is None or previous_block_hash is None:
+        logger.error("Cannot create block template: no valid chain tip found")
+        return {
+            "result": None,
+            "error": {"code": -1, "message": "No valid chain tip found"},
+            "id": data["id"]
+        }
+    
     block_template = {
         "version": 1,
         "previousblockhash": f"{previous_block_hash}",
@@ -151,7 +309,8 @@ async def submit_block(request: Request, data: dict) -> dict:
     logger.info(f"Block submission request: {data}")
     
     try:
-        gossip_client = request.app.state.gossip_client
+        gossip_client = getattr(request.app.state, 'gossip_client', None)
+        logger.info(f"Retrieved gossip_client from app state: {gossip_client}")
         
         # Validate block submission parameters
         if "params" not in data or not isinstance(data["params"], list) or len(data["params"]) == 0:
@@ -215,8 +374,14 @@ async def submit_block(request: Request, data: dict) -> dict:
         coinbase_tx, size = parse_tx(raw, offset)
         print(coinbase_tx)
         coinbase_script_pubkey = coinbase_tx["outputs"][0]["script_pubkey"]
-        coinbase_miner_address = scriptpubkey_to_address(coinbase_script_pubkey)
-        print(f"****** COINBASE MINER ADDERSS {coinbase_miner_address}")
+        # For cpuminer compatibility, extract standard Bitcoin address from coinbase
+        try:
+            coinbase_miner_address = scriptpubkey_to_address(coinbase_script_pubkey)
+            logger.info(f"Coinbase miner address (Bitcoin format): {coinbase_miner_address}")
+        except Exception as e:
+            # If standard address extraction fails, use a default quantum-safe address
+            coinbase_miner_address = ADMIN_ADDRESS
+            logger.warning(f"Could not extract miner address, using admin: {coinbase_miner_address}")
         coinbase_raw = raw[coinbase_start:coinbase_start + size]
         coinbase_txid = sha256d(coinbase_raw)[::-1].hex() 
         print(f"****** COINBASE TXID: {coinbase_txid}")
@@ -231,24 +396,57 @@ async def submit_block(request: Request, data: dict) -> dict:
         offset += size
         
         # Check if there's any data after the coinbase transaction
+        processed_txids = set()  # Track txids to prevent duplicate processing
+        
         if offset < len(raw):
             try:
                 blob = raw[offset:].decode('utf-8')
                 decoder = json.JSONDecoder()
                 pos     = 0
                 while pos < len(blob):
-                    obj, next_pos = decoder.raw_decode(blob, pos)
-                    tx_list.append(obj)
-                    pos = next_pos
-                    while pos < len(blob) and blob[pos] in ' \t\r\n,':
-                        pos += 1
+                    try:
+                        obj, next_pos = decoder.raw_decode(blob, pos)
+                        
+                        # Calculate txid for this transaction to check for duplicates
+                        if isinstance(obj, dict) and "body" in obj:
+                            temp_raw_tx = serialize_transaction(obj)
+                            temp_txid = sha256d(bytes.fromhex(temp_raw_tx))[::-1].hex()
+                            
+                            # Skip if we've already seen this transaction
+                            if temp_txid not in processed_txids:
+                                tx_list.append(obj)
+                                processed_txids.add(temp_txid)
+                                logger.debug(f"Added transaction {temp_txid} to processing list")
+                            else:
+                                logger.warning(f"Skipping duplicate transaction {temp_txid}")
+                        
+                        pos = next_pos
+                        # Skip whitespace and commas
+                        while pos < len(blob) and blob[pos] in ' \t\r\n,':
+                            pos += 1
+                    except json.JSONDecodeError:
+                        # No more valid JSON objects, exit the loop
+                        break
+                    except Exception as e:
+                        logger.warning(f"Error parsing transaction at position {pos}: {e}")
+                        break
             except Exception as e:
                 # No valid JSON data after coinbase, which is fine for cpuminer blocks
                 logger.debug(f"No additional transactions after coinbase: {e}")
 
 
+        # Track UTXOs spent in this block to prevent double-spending within the same block
+        spent_in_this_block = set()
+        
         for tx in tx_list:
-            raw_tx = serialize_transaction(tx)
+            # Create a clean copy without txid field for consistent hashing
+            tx_clean = copy.deepcopy(tx)
+            if "txid" in tx_clean:
+                del tx_clean["txid"]
+            for output in tx_clean.get("outputs", []):
+                output.pop("txid", None)
+            
+            raw_tx = serialize_transaction(tx_clean)
             txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex()
             txids.append(txid)
             inputs = tx["inputs"]
@@ -288,7 +486,14 @@ async def submit_block(request: Request, data: dict) -> dict:
                 if (total_required <= total_available):
                        # Spend inputs
                     for input_ in inputs:
-                        utxo_key = f"utxo:{input_['txid']}:{input_['utxo_index']}".encode()
+                        utxo_key = f"utxo:{input_['txid']}:{input_.get('utxo_index', 0)}".encode()
+                        utxo_key_str = utxo_key.decode()
+                        
+                        # Check if this UTXO was already spent in this block
+                        if utxo_key_str in spent_in_this_block:
+                            logger.warning(f"UTXO {utxo_key} already spent in this block, skipping")
+                            continue
+                            
                         if utxo_key in db:
                             print(f"****** Marking utxo {utxo_key} as spent")
                             utxo_raw = db.get(utxo_key)
@@ -301,25 +506,26 @@ async def submit_block(request: Request, data: dict) -> dict:
                                 return rpc_error(-1, f"Double-spend detected: {utxo_key.decode()}", data["id"])
                             utxo["spent"] = True
                             batch.put(utxo_key, json.dumps(utxo).encode())
+                            spent_in_this_block.add(utxo_key_str)
                             print(f"****** Done marking {utxo_key} as spent")
 
                     # Create outputs
-                    for output_ in outputs:
-                        utxo_key = f"utxo:{txid}:{output_['utxo_index']}".encode()
+                    for idx, output_ in enumerate(outputs):
+                        utxo_idx = output_.get('utxo_index', idx)
+                        utxo_key = f"utxo:{txid}:{utxo_idx}".encode()
                         utxo_value = {
                             "txid": txid,
-                            "utxo_index": output_["utxo_index"],
+                            "utxo_index": utxo_idx,
                             "sender": output_["sender"],
                             "receiver": output_["receiver"],
-                            "amount": output_["amount"],
+                            "amount": str(output_["amount"]),  # Ensure amount is always a string
                             "spent": False
                         }
                         batch.put(utxo_key, json.dumps(utxo_value).encode())
                         print(f"****** Created UTXO {utxo_key} → {utxo_value}")
 
-                    # Commit all changes atomically
-                    #db.write(batch)
-                    #del pending_transactions[txid]
+                    # Store transaction
+                    batch.put(b"tx:" + txid.encode(), json.dumps(tx).encode())
 
 
         calculated_merkle = calculate_merkle_root(txids)
@@ -328,6 +534,11 @@ async def submit_block(request: Request, data: dict) -> dict:
             return rpc_error(-1, "Merkle root mismatch", data["id"])
 
         logger.info("Block merkle root validation successful")
+        
+        # Use ChainManager to add the block
+        from blockchain.chain_manager import ChainManager
+        cm = ChainManager()
+        
         block_data = {
             "version": version,
             "bits": bits,
@@ -340,6 +551,14 @@ async def submit_block(request: Request, data: dict) -> dict:
             "merkle_root": calculated_merkle,
             "miner_address": coinbase_miner_address, 
         }
+        
+        # Add block using ChainManager
+        success, error_msg = cm.add_block(block_data)
+        if not success:
+            logger.error(f"ChainManager rejected block: {error_msg}")
+            return rpc_error(-1, f"Block rejected: {error_msg}", data["id"])
+        
+        # Store block and transactions in database
         batch.put(b"block:" + block.hash().encode(), json.dumps(block_data).encode())
         db.write(batch)
 
@@ -349,6 +568,7 @@ async def submit_block(request: Request, data: dict) -> dict:
         async with state_lock:
             blockchain.append(block.hash())
         logger.info(f"Block successfully added: {block.hash()} height={block_data['height']} txs={len(tx_list)}")
+        logger.info(f"About to broadcast block to peers...")
 
         full_transactions = []
         for tx_id in block_data.get("tx_ids", []):
@@ -363,11 +583,23 @@ async def submit_block(request: Request, data: dict) -> dict:
         
         block_gossip = {
                 "type": "blocks_response",
-                "blocks": block_data,
+                "blocks": [block_data],  # blocks should be a list
                 "timestamp": int(time.time() * 1000)
         }
 
-        await gossip_client.randomized_broadcast(block_gossip)
+        logger.info(f"Broadcasting block {block.hash()} at height {block_data['height']}")
+        logger.info(f"gossip_client = {gossip_client}")
+        logger.info(f"gossip_client type = {type(gossip_client)}")
+        
+        if not gossip_client:
+            logger.error("gossip_client is None! Cannot broadcast block")
+        else:
+            try:
+                logger.info("Calling randomized_broadcast...")
+                await gossip_client.randomized_broadcast(block_gossip)
+                logger.info("Block broadcast completed successfully")
+            except Exception as e:
+                logger.error(f"Failed to broadcast block: {e}", exc_info=True)
 
         return {"result": None, "error": None, "id": data["id"]}
     

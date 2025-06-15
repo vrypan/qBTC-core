@@ -10,11 +10,13 @@ services:
       WALLET_FILE: "bootstrap.json"
       # Disable NAT traversal for test network
       DISABLE_NAT_TRAVERSAL: "true"
+      # Set database path
+      ROCKSDB_PATH: "/app/db"
       # Security configuration - disabled for test network
       RATE_LIMIT_ENABLED: "false"
       DDOS_PROTECTION_ENABLED: "false"
       # Set admin address to bootstrap for testing
-      ADMIN_ADDRESS: "${ADMIN_ADDRESS:-}"
+      ADMIN_ADDRESS: "bqs1HpmbeSd8nhRpq5zX5df91D3Xy8pSUovmV" #"${ADMIN_ADDRESS:-}"
       ATTACK_PATTERN_DETECTION: "false"
       BOT_DETECTION_ENABLED: "false"
       PEER_REPUTATION_ENABLED: "true"
@@ -34,7 +36,7 @@ services:
       - "8001:8001/udp" # DHT UDP
       - "8002:8002"     # Gossip TCP
     volumes:
-      - bootstrap-data:/app/ledger.rocksdb
+      - bootstrap-data:/app/db
       - ./logs:/var/log/qbtc
     depends_on:
       - redis
@@ -61,6 +63,8 @@ services:
       WALLET_FILE: "validator1.json"
       # Disable NAT traversal for test network
       DISABLE_NAT_TRAVERSAL: "true"
+      # Set database path
+      ROCKSDB_PATH: "/app/db"
       # Security configuration - disabled for test network
       RATE_LIMIT_ENABLED: "false"
       DDOS_PROTECTION_ENABLED: "false"
@@ -80,7 +84,7 @@ services:
       - "8003:8003/udp"
       - "8004:8004"
     volumes:
-      - validator1-data:/app/ledger.rocksdb
+      - validator1-data:/app/db
       - ./logs:/var/log/qbtc
     depends_on:
       - bootstrap
@@ -108,6 +112,8 @@ services:
       WALLET_FILE: "validator2.json"
       # Disable NAT traversal for test network
       DISABLE_NAT_TRAVERSAL: "true"
+      # Set database path
+      ROCKSDB_PATH: "/app/db"
       # Security configuration - disabled for test network
       RATE_LIMIT_ENABLED: "false"
       DDOS_PROTECTION_ENABLED: "false"
@@ -127,7 +133,7 @@ services:
       - "8005:8005/udp"
       - "8006:8006"
     volumes:
-      - validator2-data:/app/ledger.rocksdb
+      - validator2-data:/app/db
       - ./logs:/var/log/qbtc
     depends_on:
       - bootstrap
