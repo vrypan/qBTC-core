@@ -22,6 +22,8 @@ The cryptographic layer is modular, allowing ML-DSA to be replaced with other po
 - 🔁 **UTXO-Based Ledger** with Merkle root verification
 - 🌱 **Validator Discovery** via Kademlia DHT
 - 📡 **Gossip Protocol** for fast block propagation
+- ⛓️ **Consensus Engine** with chain reorganization support
+- 🔄 **Fork Resolution** using cumulative difficulty
 - 🧠 **Protobuf-encoded** Transactions and Blocks
 - 🚀 Built with **Python, FastAPI, and asyncio**
 
@@ -40,8 +42,10 @@ The cryptographic layer is modular, allowing ML-DSA to be replaced with other po
          v                               v
 +-------------------+         +----------------------+
 | Blockchain Logic  | <-----> | Protobuf Structures  |
-| - Merkle Root     |         | - Blocks, Txns       |
-| - UTXO State      |         +----------------------+
+| - ChainManager    |         | - Blocks, Txns       |
+| - Merkle Root     |         +----------------------+
+| - UTXO State      |
+| - Fork Resolution |
 +-------------------+
          |
          v
@@ -251,8 +255,10 @@ Internal/external audits can be found in the audits folder we are working our wa
 - ✅ Merkle Root, Gossip, Kademlia, UTXO
 - ✅ Bitcoin-compatible RPC (getblocktemplate, submitblock)
 - ✅ Rate limiting & DDoS protection
+- ✅ Fork Choice Rule (longest chain by cumulative difficulty)
+- ✅ Chain reorganization & orphan block management
 - 🔒 TLS + Peer Authentication
-- ⚠️ Fork Choice Rule & Difficulty Enforcement
+- ⚠️ Difficulty Adjustment Algorithm
 - 🧮 Fee Market & Miner Incentives
 - 🧹 UTXO Pruning & State Compression
 
