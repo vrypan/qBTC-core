@@ -124,58 +124,105 @@ Where `8009 8010` are example DHT and gossip ports on your local server.
 
 ## 🐳 Docker Development Environment
 
-### Configuration (.env file)
+### Option 1: Join the Existing qBTC Network
 
-When using Docker, you need to configure your node using a `.env` file:
+To run a single node and connect to the existing qBTC network:
 
 ```bash
-# Copy the example configuration
-cp .env.example .env
+# Create a docker-compose.single.yml file
+cat > docker-compose.single.yml << 'EOF'
+version: '3.8'
 
-# Edit the configuration
-nano .env
+services:
+  qbtc-node:
+    build: .
+    container_name: qbtc-node
+    environment:
+      - ROCKSDB_PATH=/data/ledger.rocksdb
+      - WALLET_FILE=/data/wallet.json
+      - WALLET_PASSWORD=your_secure_password_here
+    volumes:
+      - qbtc-data:/data
+      - ./wallet.json:/data/wallet.json:ro
+    ports:
+      - "8080:8080"  # API port
+      - "8332:8332"  # RPC port
+      - "7002:7002"  # Gossip port
+      - "8001:8001"  # DHT port
+    command: python main.py 8001 7002 --Bootstrap_ip api.bitcoinqs.org --Bootstrap_port 8001 --wallet /data/wallet.json
+    restart: unless-stopped
 
-# Key settings to update:
-# - WALLET_PASSWORD: Change from CHANGE_ME_TO_SECURE_PASSWORD to your actual password
-# - NODE_COMMAND: Already configured to connect to main network
-# - Ports: Default ports are fine unless you have conflicts
+volumes:
+  qbtc-data:
+EOF
+
+# Generate a wallet if you don't have one
+python3 wallet/wallet.py
+
+# Start the node
+docker compose -f docker-compose.single.yml up -d
+
+# View logs
+docker compose -f docker-compose.single.yml logs -f
 ```
 
-**Important**: The `.env` file contains your wallet password and should never be committed to git. It's already in `.gitignore`.
+### Configuration Notes
 
-For local development and testing, we provide a complete 3-node test network:
+- **Wallet**: Place your `wallet.json` in the project root directory
+- **Password**: Update `WALLET_PASSWORD` in the compose file
+- **Ports**: Adjust if you have conflicts with existing services
+- **Data**: Stored in Docker volumes for persistence
 
-### Quick Test Network Setup
+### Option 2: Local Test Network
+
+If you want to test locally before joining the main network, we provide a 3-node test network:
 
 ```bash
-# Setup and start test network with funded bootstrap wallet
-./setup_test_network.sh
+# Start the 3-node test network
+docker compose up -d
 
 # This creates:
-# - Bootstrap node: localhost:8080 (with genesis funds)  
-# - Validator 1: localhost:8081
-# - Validator 2: localhost:8082
+# - Bootstrap node: localhost:8080 (API) / localhost:8332 (RPC)
+# - Validator 1: localhost:8081 (API) / localhost:8333 (RPC)
+# - Validator 2: localhost:8082 (API) / localhost:8334 (RPC)
 # - Redis: localhost:6379 (for rate limiting)
 
-# Run comprehensive test with cpuminer mining
-python full_100_cycle_test.py --wallet original_bootstrap.json --password bootstrappass --cycles 10
+# View logs
+docker compose logs -f
+
+# Stop the network
+docker compose down
+
+# Stop and remove all data (fresh start)
+docker compose down -v
 ```
 
-### Single Node Deployment
+The bootstrap node starts with genesis funds (21M qBTC) at address `bqs1HpmbeSd8nhRpq5zX5df91D3Xy8pSUovmV`.
 
-For joining the main network with Docker:
+You can modify the `docker-compose.yml` file to add more validator nodes if needed.
+
+#### Testing the Local Network
 
 ```bash
-# Copy and configure environment
-cp .env.example .env
-nano .env  # Set WALLET_PASSWORD=your_secure_password_here
+# Check node status
+curl http://localhost:8080/health
+curl http://localhost:8081/health
+curl http://localhost:8082/health
 
-# Start node with monitoring
-docker compose -f docker-compose.single.yml --profile monitoring up -d
+# Check balances
+curl http://localhost:8080/balance/bqs1HpmbeSd8nhRpq5zX5df91D3Xy8pSUovmV
 
-# Access monitoring
-# Prometheus: http://localhost:9090
-# Grafana: http://localhost:3000
+# Submit a transaction (you'll need the bootstrap wallet password)
+python3 harness.py --node http://localhost:8080 --receiver bqs1NoaFdBFxgaKoUzf4nn3peMwT8P32meFg8 --amount 500 --wallet bootstrap.json
+
+# Mine blocks to include the transaction
+docker run --rm --network=qbtc-core_qbtc-network cpuminer-opt \
+  -a sha256d \
+  -o http://qbtc-bootstrap:8332 \
+  -u test -p x \
+  --coinbase-addr=1BoatSLRHtKNngkdXEeobR76b53LETtpyT \
+  --no-longpoll \
+  -t 1
 ```
 
 ## 🧪 Testing Multi-Node
@@ -214,17 +261,24 @@ This sends 500 qBTC to the specified address using your signed wallet.
 To mine blocks (including mempool transactions), use cpuminer-opt connected to any node's RPC endpoint:
 
 ```bash
-# For external mining
+# For external mining (main network)
 docker run --rm -it cpuminer-opt \
   -a sha256d \
   -o http://api.bitcoinqs.org:8332 \
   -u someuser -p x \
   --coinbase-addr=1BoatSLRHtKNngkdXEeobR76b53LETtpyT
 
-# For local Docker network testing
+# For local 3-node test network
 docker run --rm --network=qbtc-core_qbtc-network cpuminer-opt \
   -a sha256d \
   -o http://qbtc-bootstrap:8332 \
+  -u test -p x \
+  --coinbase-addr=1BoatSLRHtKNngkdXEeobR76b53LETtpyT
+
+# For local node (from host)
+docker run --rm cpuminer-opt \
+  -a sha256d \
+  -o http://host.docker.internal:8332 \
   -u test -p x \
   --coinbase-addr=1BoatSLRHtKNngkdXEeobR76b53LETtpyT
 ```
