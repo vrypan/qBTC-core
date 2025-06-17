@@ -3,6 +3,7 @@ import time
 import struct
 import json
 import logging
+import asyncio
 from decimal import Decimal
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +24,22 @@ from security.integrated_security import integrated_security_middleware
 
 logger = logging.getLogger(__name__)
 
+# Longpoll support for miners
+longpoll_waiters = []  # List of (longpollid, future) tuples
+longpoll_lock = asyncio.Lock()
+
+async def notify_new_block():
+    """Notify all waiting longpoll requests that a new block has arrived"""
+    async with longpoll_lock:
+        logger.info(f"notify_new_block called - {len(longpoll_waiters)} miners waiting")
+        notified = 0
+        for longpollid, future in longpoll_waiters:
+            if not future.done():
+                logger.info(f"Notifying miner waiting for block {longpollid}")
+                future.set_result(True)
+                notified += 1
+        logger.info(f"Notified {notified} miners")
+        longpoll_waiters.clear()
 
 
 rpc_app = FastAPI(title="qBTC RPC API", version="1.0.0")
@@ -109,10 +126,17 @@ async def get_mining_info(data):
         db = get_db()
         height, _ = get_current_height(db)
         
-        # Calculate network hash rate (simplified - blocks per hour * difficulty)
-        # In production, this would analyze recent blocks
-        current_difficulty = 1.0  # Simplified for now
-        network_hashps = 1000000  # 1 MH/s placeholder
+        # Calculate current difficulty from bits
+        from blockchain.difficulty import get_next_bits, compact_to_target
+        
+        # Get current bits for mining
+        current_bits = get_next_bits(db, height if height is not None else -1)
+        current_target = compact_to_target(current_bits)
+        max_target = compact_to_target(0x1d00ffff)  # Bitcoin's max target
+        current_difficulty = max_target / current_target
+        
+        # Estimate network hash rate (simplified)
+        network_hashps = int(current_difficulty * 7000000)  # Rough estimate
         
         # Count pending transactions
         pooled_tx_count = len(pending_transactions)
@@ -236,16 +260,80 @@ async def get_work(data):
 async def get_block_template(data):
     print(data)
     db = get_db()
-    timestamp = int(time.time())
+    
+    # Check if this is a longpoll request
+    params = data.get("params", [{}])
+    request_params = params[0] if params else {}
+    longpollid = request_params.get("longpollid")
+    
+    logger.info(f"getblocktemplate called with params: {request_params}")
+    logger.info(f"Longpoll ID from request: {longpollid}")
+    
+    # Get current blockchain state
     height, previous_block_hash = get_current_height(db)
+    
+    # If longpoll is requested and the tip hasn't changed, wait for a new block
+    if longpollid and longpollid == previous_block_hash:
+        logger.info(f"Longpoll request received for block {longpollid}, waiting for new block...")
+        
+        # Create a future to wait on
+        future = asyncio.Future()
+        
+        # Add to waiters list
+        async with longpoll_lock:
+            longpoll_waiters.append((longpollid, future))
+        
+        try:
+            # Wait for up to 60 seconds for a new block
+            await asyncio.wait_for(future, timeout=60.0)
+            logger.info("Longpoll triggered by new block")
+            # Re-fetch the current state after new block
+            height, previous_block_hash = get_current_height(db)
+        except asyncio.TimeoutError:
+            logger.info("Longpoll timed out after 60 seconds")
+            # Remove from waiters if still there
+            async with longpoll_lock:
+                longpoll_waiters[:] = [(lid, f) for lid, f in longpoll_waiters 
+                                      if f is not future]
+        finally:
+            # Ensure we're removed from waiters
+            async with longpoll_lock:
+                longpoll_waiters[:] = [(lid, f) for lid, f in longpoll_waiters 
+                                      if f is not future]
+    elif longpollid and longpollid != previous_block_hash:
+        # If longpollid is provided but doesn't match current tip, return immediately
+        # This handles the case where a new block was just mined
+        logger.info(f"Longpoll ID {longpollid} doesn't match current tip {previous_block_hash}, returning new template immediately")
+    
+    timestamp = int(time.time())
     logger.info(f"get_block_template: height={height}, previous_block_hash={previous_block_hash}")
     transactions = []
     txids = [] 
+    seen_txids = set()  # Track which txids we've already added
 
     # Include pending transactions in the block template
-    for orig_tx in pending_transactions.values():
+    for tx_key, orig_tx in pending_transactions.items():
+        # tx_key should be the txid
         tx = copy.deepcopy(orig_tx)
-        txid = tx.get("txid")  # Get the txid if it exists
+        stored_txid = tx.get("txid")  # Get the txid if it exists
+        
+        # Check if inputs are still unspent
+        valid_tx = True
+        for input_ in tx.get("inputs", []):
+            utxo_key = f"utxo:{input_['txid']}:{input_.get('utxo_index', 0)}".encode()
+            if utxo_key in db:
+                utxo_data = json.loads(db[utxo_key].decode())
+                if utxo_data.get("spent", False):
+                    logger.info(f"Skipping transaction {tx_key} - input {utxo_key.decode()} already spent")
+                    valid_tx = False
+                    break
+            else:
+                logger.warning(f"Skipping transaction {tx_key} - input {utxo_key.decode()} not found")
+                valid_tx = False
+                break
+        
+        if not valid_tx:
+            continue
         
         # Remove txid from transaction and outputs before serialization
         if "txid" in tx:
@@ -253,18 +341,28 @@ async def get_block_template(data):
         for output in tx.get("outputs", []):
             output.pop("txid", None)
         
-        # If no txid was present, calculate it
-        if not txid:
-            raw_tx = serialize_transaction(tx)
-            txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex()
-        else:
-            raw_tx = serialize_transaction(tx)
+        # Always recalculate to ensure consistency
+        raw_tx = serialize_transaction(tx)
+        calculated_txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex()
         
-        transactions.append({
-            "data": raw_tx,  
-            "txid": txid
-        })
-        txids.append(txid) 
+        # Verify the txid matches
+        if stored_txid and stored_txid != calculated_txid:
+            logger.warning(f"TXID mismatch! Stored: {stored_txid}, Calculated: {calculated_txid}")
+            logger.warning(f"Using calculated TXID")
+        
+        txid = calculated_txid
+        
+        # Only add if we haven't seen this txid before
+        if txid not in seen_txids:
+            transactions.append({
+                "data": raw_tx,  
+                "txid": txid
+            })
+            txids.append(txid)
+            seen_txids.add(txid)
+            logger.debug(f"Added transaction {txid} to block template")
+        else:
+            logger.warning(f"Skipping duplicate transaction {txid} in block template") 
 
 
     # Handle case where we're at genesis
@@ -361,7 +459,7 @@ async def submit_block(request: Request, data: dict) -> dict:
         if prev_block != local_tip:
             if db.get(f"block:{prev_block}".encode()):      # we do know that block
                 logger.warning(f"Stale block submitted: {block.hash()}")
-                return rpc_error(23, "stale", data["id"])   # ➜ miner refreshes template
+                return rpc_error(-5, "stale-prevblk", data["id"])   # Use Bitcoin Core's error code
             logger.error(f"Block references unknown previous block: {prev_block}")
             return rpc_error(-1, "bad-prevblk", data["id"])
 
@@ -375,6 +473,7 @@ async def submit_block(request: Request, data: dict) -> dict:
         offset = 80
         tx_count, sz = read_varint(raw, offset)
         offset += sz
+        logger.info(f"Block transaction count from header: {tx_count}")
         coinbase_start = offset
         coinbase_tx, size = parse_tx(raw, offset)
         print(coinbase_tx)
@@ -389,7 +488,8 @@ async def submit_block(request: Request, data: dict) -> dict:
             logger.warning(f"Could not extract miner address, using admin: {coinbase_miner_address}")
         coinbase_raw = raw[coinbase_start:coinbase_start + size]
         coinbase_txid = sha256d(coinbase_raw)[::-1].hex() 
-        print(f"****** COINBASE TXID: {coinbase_txid}")
+        logger.info(f"Coinbase TXID: {coinbase_txid}")
+        logger.info(f"Coinbase miner address: {coinbase_miner_address}")
         txids.append(coinbase_txid)
 
         #batch.put(b"tx:" + coinbase_txid.encode(), json.dumps(coinbase_tx).encode())
@@ -401,29 +501,33 @@ async def submit_block(request: Request, data: dict) -> dict:
         offset += size
         
         # Check if there's any data after the coinbase transaction
-        processed_txids = set()  # Track txids to prevent duplicate processing
-        
-        if offset < len(raw):
+        if offset >= len(raw):
+            logger.info("Block contains only coinbase transaction")
+        else:
             try:
                 blob = raw[offset:].decode('utf-8')
+                logger.info(f"JSON blob length: {len(blob)} bytes")
+                logger.debug(f"First 200 chars of blob: {blob[:200]}...")
+                
                 decoder = json.JSONDecoder()
                 pos     = 0
+                json_obj_count = 0
                 while pos < len(blob):
                     try:
                         obj, next_pos = decoder.raw_decode(blob, pos)
                         
                         # Calculate txid for this transaction to check for duplicates
                         if isinstance(obj, dict) and "body" in obj:
+                            # Don't clean here - serialize_transaction does it internally
                             temp_raw_tx = serialize_transaction(obj)
                             temp_txid = sha256d(bytes.fromhex(temp_raw_tx))[::-1].hex()
+                            logger.debug(f"Parsed transaction with TXID: {temp_txid}")
                             
-                            # Skip if we've already seen this transaction
-                            if temp_txid not in processed_txids:
-                                tx_list.append(obj)
-                                processed_txids.add(temp_txid)
-                                logger.debug(f"Added transaction {temp_txid} to processing list")
-                            else:
-                                logger.warning(f"Skipping duplicate transaction {temp_txid}")
+                            # Always add the transaction, even if duplicate
+                            # cpuminer sends what we give it, including duplicates
+                            tx_list.append(obj)
+                            json_obj_count += 1
+                            logger.info(f"Added JSON object {json_obj_count} to tx_list")
                         
                         pos = next_pos
                         # Skip whitespace and commas
@@ -438,22 +542,34 @@ async def submit_block(request: Request, data: dict) -> dict:
             except Exception as e:
                 # No valid JSON data after coinbase, which is fine for cpuminer blocks
                 logger.debug(f"No additional transactions after coinbase: {e}")
+        
+        logger.info(f"Total transactions parsed from JSON: {len(tx_list)}")
+        logger.info(f"Transaction count from header: {tx_count}")
+        logger.info(f"Expected non-coinbase txs: {tx_count - 1}")
+        
+        # If we have more transactions than expected, cpuminer might have duplicated them
+        if len(tx_list) > (tx_count - 1):
+            logger.warning(f"Found {len(tx_list)} JSON transactions but header says {tx_count - 1}")
+            logger.warning("cpuminer may have duplicated transaction data")
 
 
         # Track UTXOs spent in this block to prevent double-spending within the same block
         spent_in_this_block = set()
+        unique_txids_processed = set()  # Track which txids we've already processed
         
-        for tx in tx_list:
-            # Create a clean copy without txid field for consistent hashing
-            tx_clean = copy.deepcopy(tx)
-            if "txid" in tx_clean:
-                del tx_clean["txid"]
-            for output in tx_clean.get("outputs", []):
-                output.pop("txid", None)
-            
-            raw_tx = serialize_transaction(tx_clean)
+        for i, tx in enumerate(tx_list):
+            # Don't clean here - serialize_transaction does it internally
+            raw_tx = serialize_transaction(tx)
             txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex()
-            txids.append(txid)
+            logger.debug(f"Processing transaction {i}: TXID: {txid}")
+            
+            # Only add unique txids to our list
+            if txid not in unique_txids_processed:
+                txids.append(txid)
+                unique_txids_processed.add(txid)
+            else:
+                logger.info(f"Skipping duplicate transaction {txid} in block data")
+                continue  # Skip processing duplicate transactions
             inputs = tx["inputs"]
             print(f"****** INPUTS : {inputs}")
             outputs = tx["outputs"]
@@ -533,16 +649,36 @@ async def submit_block(request: Request, data: dict) -> dict:
                     batch.put(b"tx:" + txid.encode(), json.dumps(tx).encode())
 
 
-        calculated_merkle = calculate_merkle_root(txids)
+        # Debug: Log all transaction IDs
+        logger.info(f"Block contains {len(txids)} unique transactions")
+        for i, txid in enumerate(txids):
+            logger.info(f"  TX {i}: {txid}")
+        
+        # Handle cpuminer duplicate transactions for merkle calculation
+        # If header says more transactions than we have unique ones, cpuminer duplicated them
+        merkle_txids = txids.copy()
+        if tx_count > len(txids):
+            logger.warning(f"Header says {tx_count} txs but only {len(txids)} unique - cpuminer duplicated transactions")
+            # Add the last transaction repeatedly to match the count
+            if len(txids) > 1:  # Must have at least coinbase + 1 other tx
+                while len(merkle_txids) < tx_count:
+                    merkle_txids.append(txids[-1])  # Duplicate the last non-coinbase tx
+                logger.info(f"Extended txid list to {len(merkle_txids)} for merkle calculation")
+        
+        calculated_merkle = calculate_merkle_root(merkle_txids)
+        logger.info(f"Calculated merkle root with {len(merkle_txids)} txids: {calculated_merkle}")
+        logger.info(f"Block merkle root: {merkle_root_block}")
+        
         if calculated_merkle != merkle_root_block:
             logger.error(f"Merkle root mismatch: calculated={calculated_merkle}, block={merkle_root_block}")
+            logger.error(f"Transaction count: {tx_count}, Unique TXIDs: {len(txids)}, Merkle TXIDs: {len(merkle_txids)}")
             return rpc_error(-1, "Merkle root mismatch", data["id"])
 
         logger.info("Block merkle root validation successful")
         
-        # Use ChainManager to add the block
-        from blockchain.chain_manager import ChainManager
-        cm = ChainManager()
+        # Use ChainManager singleton to add the block
+        from blockchain.chain_singleton import get_chain_manager
+        cm = get_chain_manager()
         
         block_data = {
             "version": version,
@@ -563,26 +699,53 @@ async def submit_block(request: Request, data: dict) -> dict:
             logger.error(f"ChainManager rejected block: {error_msg}")
             return rpc_error(-1, f"Block rejected: {error_msg}", data["id"])
         
+        # Store transactions first
+        full_transactions = []
+        
+        # Store coinbase transaction
+        coinbase_tx_data = {
+            "version": coinbase_tx["version"],
+            "inputs": coinbase_tx["inputs"],
+            "outputs": coinbase_tx["outputs"],
+            "locktime": coinbase_tx.get("locktime", 0)
+        }
+        batch.put(f"tx:{coinbase_txid}".encode(), json.dumps(coinbase_tx_data).encode())
+        full_transactions.append(coinbase_tx_data)
+        
+        # Add all other transactions to full_transactions
+        for tx in tx_list:
+            if tx:  # Only add non-None transactions
+                full_transactions.append(tx)
+        
+        # Add full_transactions to block_data
+        block_data["full_transactions"] = full_transactions
+        
         # Store block and transactions in database
         batch.put(b"block:" + block.hash().encode(), json.dumps(block_data).encode())
         db.write(batch)
 
+        # Remove all non-coinbase transactions from pending pool
         for tid in txids[1:]:
-            pending_transactions.pop(tid, None)
+            if tid in pending_transactions:
+                logger.info(f"Removing transaction {tid} from pending pool")
+                pending_transactions.pop(tid, None)
+            else:
+                logger.debug(f"Transaction {tid} not in pending pool (might be duplicate)")
 
         async with state_lock:
             blockchain.append(block.hash())
         logger.info(f"Block successfully added: {block.hash()} height={block_data['height']} txs={len(tx_list)}")
+        logger.info("About to notify waiting miners...")
+        
+        # Notify waiting miners of new block
+        await notify_new_block()
+        
+        logger.info("Miners notified of new block")
+        
         logger.info(f"About to broadcast block to peers...")
 
-        full_transactions = []
-        for tx_id in block_data.get("tx_ids", []):
-            tx_key = f"tx:{tx_id}".encode()
-            if tx_key in db:
-                tx_data = json.loads(db[tx_key].decode())
-                full_transactions.append(tx_data)
-
-        block_data["full_transactions"] = full_transactions
+        # Full transactions are already in block_data from above
+        # No need to fetch them again from DB
 
 
         

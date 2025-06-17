@@ -17,6 +17,7 @@ async def create_genesis_block(db, is_bootstrap: bool, admin_address: str):
     
     if genesis_block_key not in db:
         logger.info("Genesis block not found, creating...")
+        logger.info(f"Database has {len(list(db.items()))} entries before genesis creation")
         genesis_amount = "21000000"
         genesis_tx = {
             "txid": genesis_tx_id,
@@ -54,6 +55,8 @@ async def create_genesis_block(db, is_bootstrap: bool, admin_address: str):
         db.put(b"block:" + genesis_block_hash.encode(), json.dumps(genesis_block_data).encode())
         blockchain.append(genesis_block_hash)
         logger.info(f"Genesis block created with hash: {genesis_block_hash}")
+        logger.info(f"Database now has {len(list(db.items()))} entries after genesis creation")
+        logger.info(f"Blockchain list now has {len(blockchain)} blocks")
     else:
         logger.info("Genesis block already exists")
 

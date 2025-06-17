@@ -137,6 +137,12 @@ class ChainManager:
         prev_hash = block_data["previous_hash"]
         height = block_data["height"]
         
+        # Store the block immediately if we don't have it yet
+        block_key = f"block:{block_hash}".encode()
+        if block_key not in self.db:
+            logger.info(f"Storing new block {block_hash} at height {height}")
+            self.db.put(block_key, json.dumps(block_data).encode())
+        
         # Check if block already exists
         if block_hash in self.block_index:
             return True, None  # Already have this block
@@ -176,12 +182,28 @@ class ChainManager:
             parent_info = self.block_index[prev_hash]
             current_time = int(time.time())
             
-            if not validate_block_timestamp(
-                block_data["timestamp"],
-                parent_info["timestamp"],
-                current_time
-            ):
-                return False, "Invalid block timestamp"
+            logger.info(f"Timestamp validation: block_ts={block_data['timestamp']}, parent_ts={parent_info['timestamp']}, current={current_time}")
+            
+            # Special handling for rapid mining (cpuminer compatibility)
+            # If the block timestamp equals or is less than parent timestamp, check if we're mining rapidly
+            if block_data["timestamp"] <= parent_info["timestamp"]:
+                # Check if parent block was mined very recently (within last 10 seconds)
+                time_since_parent = current_time - parent_info["timestamp"]
+                logger.info(f"Block timestamp <= parent. Time since parent: {time_since_parent}s")
+                
+                if time_since_parent <= 10:  # Increased window to 10 seconds
+                    logger.warning(f"Allowing timestamp {block_data['timestamp']} <= parent {parent_info['timestamp']} for rapid mining (parent mined {time_since_parent}s ago)")
+                    # Skip the normal timestamp validation for rapid mining
+                else:
+                    return False, f"Invalid block timestamp - must be greater than parent (block: {block_data['timestamp']}, parent: {parent_info['timestamp']})"
+            else:
+                # Normal timestamp validation
+                if not validate_block_timestamp(
+                    block_data["timestamp"],
+                    parent_info["timestamp"],
+                    current_time
+                ):
+                    return False, "Invalid block timestamp"
         
         # Check if we have the parent block
         if prev_hash not in self.block_index and prev_hash != "00" * 32:

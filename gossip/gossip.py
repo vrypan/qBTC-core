@@ -23,12 +23,20 @@ except ImportError:
 
 GENESIS_HASH = "0" * 64
 MAX_LINE_BYTES = 30 * 1024 * 1024  
+MAX_SEEN_TX_SIZE = 10000  # Maximum number of transaction IDs to remember
 
 class GossipNode:
     def __init__(self, node_id, wallet=None, is_bootstrap=False, is_full_node=True):
         self.node_id = node_id
         self.wallet = wallet
         self.seen_tx = set()
+        self.seen_tx_timestamps = {}  # Track when we first saw each tx
+        self.tx_stats = {
+            'received': 0,
+            'duplicates': 0,
+            'new': 0,
+            'invalid': 0
+        }
         self.dht_peers = set()  
         self.client_peers = set()  
         self.failed_peers = {}
@@ -129,24 +137,51 @@ class GossipNode:
 
 
 
+    def _cleanup_seen_tx(self):
+        """Remove oldest transaction IDs when we exceed the maximum size."""
+        if len(self.seen_tx) <= MAX_SEEN_TX_SIZE:
+            return
+        
+        # Sort by timestamp and remove the oldest ones
+        sorted_txs = sorted(self.seen_tx_timestamps.items(), key=lambda x: x[1])
+        to_remove = len(self.seen_tx) - int(MAX_SEEN_TX_SIZE * 0.9)  # Remove 10% when at capacity
+        
+        for txid, _ in sorted_txs[:to_remove]:
+            self.seen_tx.discard(txid)
+            self.seen_tx_timestamps.pop(txid, None)
+    
     async def handle_gossip_message(self, msg, from_peer, writer):
         db = get_db()  
         msg_type = msg.get("type")
         timestamp = msg.get("timestamp", int(time.time() * 1000))
-        tx_id = msg.get("tx_id")
-
-        print(msg)
+        txid = msg.get("txid")
 
         if timestamp < int(time.time() * 1000) - 60000:  
             print("**** TRANSACTION IS STALE")
             return
 
         if msg_type == "transaction":
-            print(msg)
-            if tx_id in self.seen_tx or tx_id in pending_transactions:
+            self.tx_stats['received'] += 1
+            
+            # Check for duplicates BEFORE logging
+            if txid in self.seen_tx:
+                # Transaction was already seen and processed
+                self.tx_stats['duplicates'] += 1
                 return
+            if txid in pending_transactions:
+                # Transaction is already in mempool
+                self.tx_stats['duplicates'] += 1
+                return
+            
+            # Only log if this is a new transaction
+            print(f"[NEW TX] Received transaction {txid} from {from_peer}")
+            
             if not verify_transaction(msg["body"]["msg_str"], msg["body"]["signature"], msg["body"]["pubkey"]):
+                print(f"[TX INVALID] Transaction {txid} failed verification")
+                self.tx_stats['invalid'] += 1
                 return
+            
+            self.tx_stats['new'] += 1
             
             # Normalize amounts to prevent scientific notation issues
             if "inputs" in msg:
@@ -161,11 +196,31 @@ class GossipNode:
             tx_lock = asyncio.Lock()
             
             async with tx_lock:
-                if tx_id in pending_transactions:
+                if txid in pending_transactions:
                     return
-                pending_transactions[tx_id] = msg
+                
+                # Ensure the message has txid
+                msg["txid"] = txid
+                
+                pending_transactions[txid] = msg
+                # Add to seen_tx BEFORE broadcasting to prevent loops
+                self.seen_tx.add(txid)
+                self.seen_tx_timestamps[txid] = int(time.time())
+                
+                # Clean up old entries if we're at capacity
+                if len(self.seen_tx) > MAX_SEEN_TX_SIZE:
+                    self._cleanup_seen_tx()
+            
+            print(f"[TX ADDED] Transaction {txid} added to mempool")
+            
+            # Print stats every 10 new transactions
+            if self.tx_stats['new'] % 10 == 0:
+                total = self.tx_stats['received']
+                dups = self.tx_stats['duplicates']
+                dup_rate = (dups / total * 100) if total > 0 else 0
+                print(f"[TX STATS] Total: {total}, New: {self.tx_stats['new']}, Duplicates: {dups} ({dup_rate:.1f}%), Invalid: {self.tx_stats['invalid']}")
+            
             await self.randomized_broadcast(msg)
-            self.seen_tx.add(tx_id)
 
         elif msg_type == "blocks_response":
             logging.info(f"Received blocks_response from {from_peer}")
@@ -204,30 +259,25 @@ class GossipNode:
                         block = json.loads(db[key].decode())
 
                         if block.get("height") == h:
-                            expanded_txs = []
-                            for tx_id in block["tx_ids"]:
-                                tx_key = f"tx:{tx_id}".encode()
-                                if tx_key in db:
-                                    expanded_txs.append({
-                                        "tx_id": tx_id,
-                                        "transaction": json.loads(db[tx_key].decode())
-                                    })
-                                    #expanded_txs.append({
-                                    #    "tx_id": tx_id,
-                                    #    "transaction": tx_data
-                                    #})
-                                else:
-                                    continue
-                                    #expanded_txs.append({
-                                    #    "tx_id": tx_id,
-                                    #    "transaction": None
-                                    #})
+                            # Check if block already has full_transactions
+                            if "full_transactions" not in block or not block["full_transactions"]:
+                                expanded_txs = []
+                                for txid in block.get("tx_ids", []):
+                                    tx_key = f"tx:{txid}".encode()
+                                    if tx_key in db:
+                                        tx_data = json.loads(db[tx_key].decode())
+                                        expanded_txs.append(tx_data)
+                                    else:
+                                        logging.warning(f"Transaction {txid} not found in DB for block at height {h}")
 
-                            cb_key = f"tx:coinbase_{h}".encode()
-                            if cb_key in db:
-                                expanded_txs.append(json.loads(db[cb_key].decode()))
+                                cb_key = f"tx:coinbase_{h}".encode()
+                                if cb_key in db:
+                                    expanded_txs.append(json.loads(db[cb_key].decode()))
 
-                            block["full_transactions"] = expanded_txs
+                                block["full_transactions"] = expanded_txs
+                            else:
+                                logging.info(f"Block at height {h} already has {len(block['full_transactions'])} full transactions")
+                            
                             found_block = block
                             break
 

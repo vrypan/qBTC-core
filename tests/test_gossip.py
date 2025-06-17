@@ -16,7 +16,7 @@ async def test_handle_valid_transaction(node, dummy_writer):
     tx_msg = {
         "type": "transaction",
         "timestamp": now_ms,
-        "tx_id": "tx-abc",
+        "txid": "tx-abc",
         "body": {"msg_str": "hello", "signature": "sig", "pubkey": "pk"},
     }
 
@@ -37,7 +37,7 @@ async def test_handle_valid_transaction(node, dummy_writer):
 @pytest.mark.stub_verify          # <<–– uses stub verifier
 async def test_stale_message(node, dummy_writer):
     stale_ts = int(time.time() * 1000) - 90_000  # older than 60 s
-    msg = {"type": "transaction", "timestamp": stale_ts, "tx_id": "old", "body": {}}
+    msg = {"type": "transaction", "timestamp": stale_ts, "txid": "old", "body": {}}
 
     await node.handle_gossip_message(msg, ("peer", 1), dummy_writer)
 

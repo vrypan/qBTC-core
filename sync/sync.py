@@ -1,23 +1,13 @@
 from database.database import get_db, get_current_height
 from rocksdict import WriteBatch
 from blockchain.blockchain import Block, calculate_merkle_root, validate_pow
-from blockchain.chain_manager import ChainManager
+from blockchain.chain_singleton import get_chain_manager
 from config.config import ADMIN_ADDRESS, GENESIS_ADDRESS
 from wallet.wallet import verify_transaction
 import json
 import logging
 from decimal import Decimal, ROUND_DOWN
 from typing import List, Dict, Tuple, Optional
-
-# Global chain manager instance
-chain_manager = None
-
-def get_chain_manager() -> ChainManager:
-    """Get or create the global chain manager instance"""
-    global chain_manager
-    if chain_manager is None:
-        chain_manager = ChainManager()
-    return chain_manager
 
 def process_blocks_from_peer(blocks: list[dict]):
     logging.info("***** IN GOSSIP MSG RECEIVE BLOCKS RESPONSE")
@@ -119,6 +109,7 @@ def _process_block_in_chain(block: dict):
     bits = block.get("bits")
     
     logging.info("[SYNC] Processing confirmed block height %s with hash %s", height, block_hash)
+    logging.info("[SYNC] Block has %d full transactions", len(full_transactions))
 
     for raw in full_transactions:
         if raw is None:
