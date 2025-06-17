@@ -9,7 +9,7 @@ from log_utils import setup_logging
 
 # Setup structured logging
 logger = setup_logging(
-    level="ERROR",
+    level="INFO",
     log_file="qbtc.log",
     enable_console=True,
     enable_structured=True

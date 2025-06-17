@@ -233,6 +233,11 @@ class GossipNode:
                 process_blocks_from_peer(blocks)
             else:
                 logging.warning("Received empty blocks_response")
+                
+        elif msg_type == "blocks_response_chunked":
+            # This would be handled by the client side, not here
+            # The gossip handler only sends chunked responses, doesn't receive them
+            logging.warning(f"Received unexpected blocks_response_chunked from {from_peer}")
    
 
         elif msg_type == "get_height":
@@ -284,9 +289,43 @@ class GossipNode:
                 if found_block:
                     blocks.append(found_block)
 
+            # Check if response is too large and needs chunking
             response = {"type": "blocks_response", "blocks": blocks}
-            writer.write((json.dumps(response) + "\n").encode('utf-8'))
-            await writer.drain()
+            response_json = json.dumps(response)
+            
+            # If response is larger than 50MB, use chunked protocol
+            if len(response_json) > 50 * 1024 * 1024:
+                # Split blocks into chunks
+                chunk_size = 10  # blocks per chunk
+                total_chunks = (len(blocks) + chunk_size - 1) // chunk_size
+                
+                # Send header first
+                header = {
+                    "type": "blocks_response_chunked",
+                    "total_chunks": total_chunks,
+                    "total_blocks": len(blocks)
+                }
+                writer.write((json.dumps(header) + "\n").encode('utf-8'))
+                await writer.drain()
+                
+                # Send each chunk
+                for chunk_num in range(total_chunks):
+                    start_idx = chunk_num * chunk_size
+                    end_idx = min((chunk_num + 1) * chunk_size, len(blocks))
+                    chunk_blocks = blocks[start_idx:end_idx]
+                    
+                    chunk_data = {
+                        "chunk_num": chunk_num,
+                        "blocks": chunk_blocks
+                    }
+                    writer.write((json.dumps(chunk_data) + "\n").encode('utf-8'))
+                    await writer.drain()
+                    
+                logging.info(f"Sent {len(blocks)} blocks in {total_chunks} chunks")
+            else:
+                # Send as single response
+                writer.write((response_json + "\n").encode('utf-8'))
+                await writer.drain()
 
   
 
