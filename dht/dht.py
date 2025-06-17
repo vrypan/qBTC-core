@@ -239,7 +239,7 @@ async def push_blocks(peer_ip, peer_port):
 
     print("Opening connection...")
     try:
-        r, w = await asyncio.open_connection(peer_ip, peer_port)
+        r, w = await asyncio.open_connection(peer_ip, peer_port, limit=100 * 1024 * 1024)  # 100MB limit
         print("Opened connection.")
 
         # Ask peer for its height
@@ -329,13 +329,43 @@ async def push_blocks(peer_ip, peer_port):
             w.write((json.dumps(get_blocks_request) + "\n").encode('utf-8'))
             await w.drain()
 
-            raw = await r.readline()
-            if not raw:
+            # First, read the response header to check if it's chunked
+            header_line = await r.readline()
+            if not header_line:
                 raise ConnectionError("Peer closed the connection")
+            
             try:
-                response = json.loads(raw.decode())   # dict now
+                header = json.loads(header_line.decode())
             except json.JSONDecodeError as e:
-                raise ValueError(f"Bad JSON from peer: {e} — payload was {raw!r}")
+                raise ValueError(f"Bad JSON header from peer: {e}")
+            
+            if header.get("type") == "blocks_response_chunked":
+                # Handle chunked response
+                total_chunks = header.get("total_chunks", 0)
+                blocks = []
+                
+                logging.info(f"Receiving chunked response with {total_chunks} chunks")
+                
+                for chunk_num in range(total_chunks):
+                    chunk_line = await r.readline()
+                    if not chunk_line:
+                        raise ConnectionError(f"Connection closed while reading chunk {chunk_num}")
+                    
+                    try:
+                        chunk_data = json.loads(chunk_line.decode())
+                        if chunk_data.get("chunk_num") != chunk_num:
+                            raise ValueError(f"Expected chunk {chunk_num}, got {chunk_data.get('chunk_num')}")
+                        
+                        blocks.extend(chunk_data.get("blocks", []))
+                        logging.info(f"Received chunk {chunk_num + 1}/{total_chunks} with {len(chunk_data.get('blocks', []))} blocks")
+                        
+                    except json.JSONDecodeError as e:
+                        raise ValueError(f"Bad JSON in chunk {chunk_num}: {e}")
+                
+                response = {"blocks": blocks}
+            else:
+                # Handle regular response (backward compatibility)
+                response = header
 
             blocks = sorted(response.get("blocks", []), key=lambda x: x["height"])
             logging.info(f"Received {len(blocks)} blocks from from peer")
