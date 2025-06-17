@@ -80,8 +80,8 @@ def test_broadcast_tx_success(_stub_database):
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "success"
-    assert "tx_id" in body
+    assert "txid" in body
 
-    # randomized_broadcast must be awaited with same tx_id
+    # randomized_broadcast must be awaited with same txid
     assert dummy_gossip.received is not None
-    assert dummy_gossip.received["txid"] == body["tx_id"]
+    assert dummy_gossip.received["txid"] == body["txid"]

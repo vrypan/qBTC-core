@@ -65,7 +65,7 @@ def test_process_blocks_happy(monkeypatch):
     mock_chain_manager.add_block.return_value = (True, None)
     mock_chain_manager.is_block_in_main_chain.return_value = True
     mock_chain_manager.get_best_chain_tip.return_value = ("11"*32, 1)
-    monkeypatch.setattr("sync.sync.chain_manager", mock_chain_manager)
+    monkeypatch.setattr("sync.sync.get_chain_manager", lambda: mock_chain_manager)
 
     # Replace WriteBatch with dummy
     monkeypatch.setattr("sync.sync.WriteBatch",
@@ -102,7 +102,7 @@ def test_process_blocks_height_mismatch(monkeypatch):
     mock_chain_manager.add_block.return_value = (True, None)  # Accept as orphan
     mock_chain_manager.is_block_in_main_chain.return_value = False  # Not in main chain
     mock_chain_manager.get_best_chain_tip.return_value = ("0"*64, 0)  # Still at genesis
-    monkeypatch.setattr("sync.sync.chain_manager", mock_chain_manager)
+    monkeypatch.setattr("sync.sync.get_chain_manager", lambda: mock_chain_manager)
 
     monkeypatch.setattr("sync.sync.WriteBatch", DummyWriteBatch, raising=True)
     monkeypatch.setattr("blockchain.blockchain.validate_pow",

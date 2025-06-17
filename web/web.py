@@ -512,7 +512,7 @@ async def worker_endpoint(request: Request):
 
         await gossip_client.randomized_broadcast(transaction)
 
-        return {"status": "success", "message": "Transaction broadcast successfully", "tx_id": txid}
+        return {"status": "success", "message": "Transaction broadcast successfully", "txid": txid}
     
     else:
         raise ValidationError(f"Unsupported request type: {payload.get('request_type')}")

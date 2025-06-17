@@ -34,6 +34,10 @@ def calculate_merkle_root(txids: list[str]) -> str:
     if not txids:
         return sha256d(b"").hex()
     
+    # Special case: single transaction, merkle root is just the txid
+    if len(txids) == 1:
+        return txids[0]
+    
     hashes = [bytes.fromhex(txid)[::-1] for txid in txids]  # little-endian
 
     while len(hashes) > 1:

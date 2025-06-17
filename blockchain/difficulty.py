@@ -9,7 +9,7 @@ from config.config import DIFFICULTY_ADJUSTMENT_INTERVAL, BLOCK_TIME_TARGET
 logger = logging.getLogger(__name__)
 
 # Constants
-MAX_TARGET_BITS = 0x1d00ffff  # Minimum difficulty bits
+MAX_TARGET_BITS = 0x1f7fffff  # Minimum difficulty bits (very easy)
 MIN_TARGET_BITS = 0x1900ffff  # Maximum difficulty bits we'll allow
 MAX_ADJUSTMENT_FACTOR = 4  # Maximum 4x increase
 MIN_ADJUSTMENT_FACTOR = 0.25  # Maximum 4x decrease (1/4)
