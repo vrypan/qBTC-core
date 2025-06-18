@@ -131,6 +131,13 @@ def _process_block_in_chain(block: dict):
     
     logging.info("[SYNC] Processing confirmed block height %s with hash %s", height, block_hash)
     logging.info("[SYNC] Block has %d full transactions", len(full_transactions))
+    
+    # Track total fees collected in this block
+    total_fees = Decimal("0")
+    # Track spent UTXOs within this block to prevent double-spending
+    spent_in_block = set()
+    # Store coinbase data for validation after fee calculation
+    coinbase_data = None
 
     for raw in full_transactions:
         if raw is None:
@@ -146,19 +153,33 @@ def _process_block_in_chain(block: dict):
         if is_probable_coinbase:
             logging.debug("[SYNC] Coinbase transaction detected")
             coinbase_tx_id = f"coinbase_{height}"
-            batch.put(f"tx:{coinbase_tx_id}".encode(), json.dumps(tx).encode())
-
+            
+            # Store coinbase data for validation after processing all transactions
+            coinbase_total = Decimal("0")
+            coinbase_outputs = []
+            
             for idx, output in enumerate(tx.get("outputs", [])):
+                output_amount = Decimal(str(output.get("value", "0")))
+                coinbase_total += output_amount
+                
                 output_key = f"utxo:{coinbase_tx_id}:{idx}".encode()
                 utxo = {
                     "txid": coinbase_tx_id,
                     "utxo_index": idx,
                     "sender": "coinbase",
                     "receiver": miner_address,   
-                    "amount": output.get("value"), ##value here assumes 50BTC however we need to update this to reflect inputs-outputs (tx feees)
+                    "amount": str(output_amount),
                     "spent": False,
                 }
-                batch.put(output_key, json.dumps(utxo).encode())
+                coinbase_outputs.append((output_key, utxo))
+            
+            # Store coinbase data for validation after fee calculation
+            coinbase_data = {
+                "tx": tx,
+                "tx_id": coinbase_tx_id,
+                "total": coinbase_total,
+                "outputs": coinbase_outputs
+            }
             continue
 
         if "txid" in tx:
@@ -189,6 +210,12 @@ def _process_block_in_chain(block: dict):
                 if "txid" not in inp:
                     continue
                 spent_key = f"utxo:{inp['txid']}:{inp.get('utxo_index', 0)}".encode()
+                spent_key_str = spent_key.decode()
+                
+                # Check if this UTXO was already spent in this block
+                if spent_key_str in spent_in_block:
+                    raise ValueError(f"Double spend detected: UTXO {spent_key_str} already spent in this block")
+                
                 utxo_raw = db.get(spent_key)
                 if not utxo_raw:
                     raise ValueError(f"Missing UTXO for input: {spent_key}")
@@ -200,7 +227,12 @@ def _process_block_in_chain(block: dict):
                     raise ValueError(f"UTXO {spent_key} not owned by sender {from_}")
 
                 total_available += Decimal(utxo["amount"])
+                # Mark as spent in this block
+                spent_in_block.add(spent_key_str)
 
+            total_to_recipient = Decimal("0")
+            total_change = Decimal("0")
+            
             for out in outputs:
                 recv = out.get("receiver")
                 amt = Decimal(out.get("amount", "0"))
@@ -210,11 +242,17 @@ def _process_block_in_chain(block: dict):
                 print("to:")
                 print(to_)
                 print(ADMIN_ADDRESS)
-                if recv in (to_, from_, ADMIN_ADDRESS):
+                if recv == to_:
+                    total_to_recipient += amt
+                elif recv == from_:
+                    total_change += amt
+                elif recv == ADMIN_ADDRESS:
+                    # This is fee to admin
                     total_required += amt
                 else:
                     raise ValueError(
                         f"Hack detected: unauthorized output to {recv} in tx {txid}")
+                total_required += amt
 
             miner_fee = (Decimal(total_authorized) * Decimal("0.001")).quantize(
                 Decimal("0.00000001"), rounding=ROUND_DOWN)
@@ -223,9 +261,19 @@ def _process_block_in_chain(block: dict):
             if height > 1 and grand_total_required > total_available:
                 raise ValueError(
                     f"Invalid tx {txid}: balance {total_available} < required {grand_total_required}")
+            
+            # Fix 3: Enforce exact payment amount to recipient
+            if height > 1 and total_to_recipient != Decimal(total_authorized):
+                raise ValueError(
+                    f"Invalid tx {txid}: authorized amount {total_authorized} != amount sent to recipient {total_to_recipient}")
 
             if height != 1 and not verify_transaction(msg_str, signature, pubkey):
                 raise ValueError(f"Signature check failed for tx {txid}")
+            
+            # Calculate the actual transaction fee for this transaction
+            if height > 1:
+                tx_fee = total_available - (total_to_recipient + total_change)
+                total_fees += tx_fee
 
             batch.put(f"tx:{txid}".encode(), json.dumps(tx).encode())
 
@@ -252,6 +300,27 @@ def _process_block_in_chain(block: dict):
                 out_key = f"utxo:{txid}:{out.get('utxo_index', 0)}".encode()
                 batch.put(out_key, json.dumps(utxo_record).encode())
 
+    # Fix 1: Validate coinbase amount after all fees are calculated
+    if coinbase_data is not None:
+        # Define block reward schedule
+        # For now, we'll use 0 block reward (only fees allowed)
+        # This can be updated to implement a proper reward schedule
+        block_subsidy = Decimal("0")
+        
+        # Maximum allowed coinbase output
+        max_coinbase_amount = block_subsidy + total_fees
+        
+        logging.info(f"[SYNC] Validating coinbase: total={coinbase_data['total']}, subsidy={block_subsidy}, fees={total_fees}, max_allowed={max_coinbase_amount}")
+        
+        if coinbase_data['total'] > max_coinbase_amount:
+            raise ValueError(
+                f"Invalid coinbase amount at height {height}: {coinbase_data['total']} > allowed {max_coinbase_amount} (subsidy={block_subsidy} + fees={total_fees})")
+        
+        # Now that coinbase is validated, store it
+        batch.put(f"tx:{coinbase_data['tx_id']}".encode(), json.dumps(coinbase_data['tx']).encode())
+        for output_key, utxo in coinbase_data['outputs']:
+            batch.put(output_key, json.dumps(utxo).encode())
+    
     calculated_root = calculate_merkle_root(tx_ids)
     if calculated_root != block_merkle_root:
         raise ValueError(
