@@ -1,0 +1,128 @@
+version: '3.8'
+
+services:
+  # Validator node connecting to mainnet
+  validator:
+    build: .
+    container_name: qbtc-validator
+    environment:
+      WALLET_PASSWORD: ${VALIDATOR_WALLET_PASSWORD}
+      WALLET_FILE: ${VALIDATOR_WALLET_FILE:-validator.json}
+      DISABLE_NAT_TRAVERSAL: "false"
+      ROCKSDB_PATH: "/app/db"
+      # Production security configuration
+      RATE_LIMIT_ENABLED: "true"
+      DDOS_PROTECTION_ENABLED: "true"
+      ADMIN_ADDRESS: ${ADMIN_ADDRESS}
+      ATTACK_PATTERN_DETECTION: "true"
+      BOT_DETECTION_ENABLED: "true"
+      PEER_REPUTATION_ENABLED: "true"
+      SECURITY_LOGGING_ENABLED: "true"
+      # Redis configuration
+      USE_REDIS: "true"
+      REDIS_URL: "redis://redis:6379/0"
+      # Rate limits (requests per minute)
+      RATE_LIMIT_WORKER: "10"
+      RATE_LIMIT_BALANCE: "100"
+      RATE_LIMIT_TRANSACTIONS: "50"
+      RATE_LIMIT_DEFAULT: "60"
+    command: ["8001", "8002", "--wallet", "${VALIDATOR_WALLET_FILE:-validator.json}", "--Bootstrap_ip", "api.bitcoinqs.org", "--Bootstrap_port", "8001"]
+    ports:
+      - "8080:8080"     # Web API
+      - "8332:8332"     # RPC
+      - "8001:8001/udp" # DHT UDP
+      - "8002:8002"     # Gossip TCP
+    volumes:
+      - validator-data:/app/db
+      - ./logs:/var/log/qbtc
+    depends_on:
+      - redis
+    networks:
+      - qbtc-network
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis for rate limiting and caching
+  redis:
+    image: redis:7-alpine
+    container_name: qbtc-redis-validator
+    volumes:
+      - redis-data:/data
+      - ./config/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
+    networks:
+      - qbtc-network
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=50m
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: qbtc-prometheus-validator
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus-validator.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=720h'  # 30 days retention
+      - '--web.enable-lifecycle'
+    networks:
+      - qbtc-network
+    restart: unless-stopped
+    depends_on:
+      - validator
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: qbtc-grafana-validator
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin123}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/qbtc-overview.json
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - qbtc-network
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+volumes:
+  validator-data:
+  redis-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  qbtc-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/16

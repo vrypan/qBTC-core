@@ -176,18 +176,30 @@ ehthumbs.db
 # qBTC specific
 *.json
 !package.json
+!package-lock.json
 !bootstrap.json
+!*/dashboards/*.json
+!monitoring/grafana/dashboards/*.json
 bootstrap_wallet_backup/
 original_bootstrap.json
 funded_wallet.json
 test_wallet.json
+wallet.json
+wallet*.json
 logs/
 *.log
 ledger.rocksdb/
 *.rocksdb/
+db/
+data/
+node/
+node_output.log
+server_output*.log
+qbtc.log
 
 # Docker
 docker-compose.override.yml
+docker-compose.old.yml
 .dockerignore
 
 # Temporary files
