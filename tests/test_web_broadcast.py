@@ -62,8 +62,9 @@ def test_broadcast_tx_success(_stub_database):
     # ------------------------------------------------------------------ #
     # 3.  Build the request payload                                      #
     # ------------------------------------------------------------------ #
-    nonce   = str(int(time.time() * 1000))
-    msg_str = f"{sender}:{receiver}:{amount}:{nonce}"
+    timestamp = str(int(time.time() * 1000))
+    chain_id = "1"  # Default chain ID
+    msg_str = f"{sender}:{receiver}:{amount}:{timestamp}:{chain_id}"
     payload = {
         "request_type": "broadcast_tx",
         "message":   base64.b64encode(msg_str.encode()).decode(),
