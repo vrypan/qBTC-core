@@ -20,7 +20,7 @@ message GossipStatusData {
     bytes tip_hash = 2;
 };
 message GossipTransactionData {
-    bytes hash = 1;
+    // bytes hash = 1; depricated
     Transaction transaction = 2;
 };
 

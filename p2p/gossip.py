@@ -122,7 +122,7 @@ class GossipNode:
                     else:
                         db.block_set(message.block)
                 if message.type == GossipMessageType.TRANSACTION:
-                    tx_hash = message.transaction_data.hash
+                    tx_hash = calculate_tx_hash(message.transaction_data.transaction)
                     print(f"[>] {message_type_str} from {addr[0]}:{addr[1]}: hash={tx_hash.hex()}")
                     if mempool.hash_exists(tx_hash):
                         print(f"[#] Transaction {tx_hash.hex()} already in mempool")
@@ -144,7 +144,9 @@ class GossipNode:
             transaction = random_transaction()
             message = GossipMessage(
                 type=GossipMessageType.TRANSACTION,
-                transaction_data=GossipTransactionData(transaction=transaction)
+                transaction_data=GossipTransactionData(
+                    transaction=transaction
+                )
             )
             asyncio.create_task(self.gossip_message(message))
             await asyncio.sleep(10)
