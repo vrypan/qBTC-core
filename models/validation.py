@@ -95,6 +95,7 @@ class BlockSubmissionRequest(BaseModel):
 class WebSocketSubscription(BaseModel):
     update_type: str = Field(..., description="Type of updates to subscribe to")
     wallet_address: Optional[str] = Field(None, description="Wallet address for targeted updates")
+    network: Optional[str] = Field('testnet', description="Network type (mainnet/testnet)")
     
     @validator('update_type')
     def validate_update_type(cls, v):
@@ -108,4 +109,12 @@ class WebSocketSubscription(BaseModel):
         if v is not None:
             if not v.startswith('bqs') or len(v) < 20:
                 raise ValueError('Invalid wallet address format')
+        return v
+    
+    @validator('network')
+    def validate_network(cls, v):
+        if v is not None:
+            allowed_networks = ['mainnet', 'testnet']
+            if v not in allowed_networks:
+                raise ValueError(f'Network must be one of: {", ".join(allowed_networks)}')
         return v

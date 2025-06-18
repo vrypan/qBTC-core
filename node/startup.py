@@ -12,6 +12,10 @@ from config.config import BOOTSTRAP_NODES, VALIDATOR_ID
 from web.web import app
 from rpc.rpc import rpc_app
 
+# Import event system
+from events.event_bus import event_bus
+from blockchain.event_integration import wrap_database_operations
+
 # Import NAT traversal
 try:
     from network.nat_traversal import nat_traversal
@@ -77,6 +81,11 @@ async def startup():
 
     db = setup_database()
     await create_genesis_block(db, is_bootstrap, admin_address)
+    
+    # Initialize event system
+    logging.info("Initializing event system...")
+    await event_bus.start()
+    logging.info("Event system initialized")
 
     # Setup NAT traversal only if:
     # 1. NAT traversal is available
@@ -138,6 +147,9 @@ async def shutdown():
     await asyncio.gather(*tasks, return_exceptions=True)
     if gossip_client:
         await gossip_client.stop()
+    
+    # Stop event bus
+    await event_bus.stop()
     
     # Cleanup NAT mappings
     if nat_traversal:

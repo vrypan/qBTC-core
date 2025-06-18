@@ -27,6 +27,10 @@ from security.integrated_security import integrated_security_middleware
 from monitoring.health import health_monitor
 from security.integrated_security import get_security_status, unblock_client, get_client_info
 
+# Import event system
+from events.event_bus import event_bus, EventTypes
+from web.websocket_handlers import WebSocketEventHandlers
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,6 +52,36 @@ app.add_middleware(
     allow_headers=["*"]
 )
 websocket_clients: Set[WebSocket] = set()
+
+# Initialize event handlers on startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize event system on startup"""
+    try:
+        # Start event bus
+        await event_bus.start()
+        logger.info("Event bus started")
+        
+        # Register WebSocket event handlers
+        ws_handlers = WebSocketEventHandlers(websocket_manager)
+        ws_handlers.register_handlers(event_bus)
+        logger.info("WebSocket event handlers registered")
+        
+        # Store handlers reference
+        app.state.ws_handlers = ws_handlers
+        
+    except Exception as e:
+        logger.error(f"Failed to start event system: {e}")
+        raise
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up event system on shutdown"""
+    try:
+        await event_bus.stop()
+        logger.info("Event bus stopped")
+    except Exception as e:
+        logger.error(f"Error stopping event bus: {e}")
 
 class WorkerRequest(BaseModel):
     request_type: str
@@ -71,6 +105,7 @@ class WebSocketManager:
         self.active_connections: Dict[WebSocket, Set[str]] = {}
         self.wallet_map: Dict[str, Set[WebSocket]] = {}
         self.bridge_sessions: Dict[str, Dict] = {}
+        self.background_tasks: Dict[str, asyncio.Task] = {}
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -88,17 +123,36 @@ class WebSocketManager:
     def subscribe(self, websocket: WebSocket, update_type: str, wallet_address: str = None):
         if websocket in self.active_connections:
             self.active_connections[websocket].add(update_type)
+            logging.info(f"WebSocket subscribed to {update_type} (wallet: {wallet_address})")
             if wallet_address and update_type in ["combined_update", "bridge"]:
                 self.wallet_map.setdefault(wallet_address, set()).add(websocket)
+                logging.debug(f"Added wallet {wallet_address} to wallet_map for {update_type}")
 
     async def broadcast(self, message: dict, update_type: str, wallet_address: str = None):
         target_connections = (
             set(self.active_connections.keys()) if update_type in ["all_transactions", "l1_proofs_testnet"]
             else self.wallet_map.get(wallet_address, set())
         )
+        logging.info(f"Broadcasting to {len(target_connections)} connections for {update_type} (wallet: {wallet_address})")
+        logging.info(f"Active connections: {len(self.active_connections)}")
+        logging.info(f"Wallet map: {list(self.wallet_map.keys())}")
+        
+        sent_count = 0
         for connection in target_connections:
-            if update_type in self.active_connections.get(connection, set()):
-                await connection.send_json(message)
+            subscriptions = self.active_connections.get(connection, set())
+            logging.info(f"Connection subscriptions: {subscriptions}")
+            if update_type in subscriptions:
+                try:
+                    logging.info(f"About to send message: {message}")
+                    await connection.send_json(message)
+                    sent_count += 1
+                    logging.info(f"Successfully sent {update_type} to connection")
+                except Exception as e:
+                    logging.error(f"Failed to send message to WebSocket: {e}")
+                    logging.error(f"Exception type: {type(e)}")
+                    logging.error(f"Connection state: {connection.client_state if hasattr(connection, 'client_state') else 'unknown'}")
+                    await self.disconnect(connection)
+        logging.info(f"Broadcast complete: sent to {sent_count} connections")
 
     def create_bridge_session(self, wallet_address: str, direction: str, bridge_address: str = None, secret: str = None):
         session_id = f"{wallet_address}_{direction}_{int(time.time())}"
@@ -133,23 +187,50 @@ def get_balance(wallet_address: str) -> Decimal:
     return total
 
 def get_transactions(wallet_address: str, limit: int = 50):
+    logging.info(f"=== get_transactions called for wallet: {wallet_address} ===")
     db = get_db()
     tx_list = []
     transactions = {}
+    utxo_count = 0
+    matching_utxos = 0
+    
+    # Log all transaction entries in the database
+    logging.info("=== SCANNING ALL TRANSACTIONS IN DATABASE ===")
+    tx_entries = []
+    for key, value in db.items():
+        if key.startswith(b"tx:"):
+            tx_data = json.loads(value.decode('utf-8'))
+            tx_entries.append((key.decode(), tx_data))
+    
+    logging.info(f"Found {len(tx_entries)} transaction entries in database")
+    for tx_key, tx_data in tx_entries[:10]:  # Log first 10
+        logging.info(f"Transaction: {tx_key} -> {json.dumps(tx_data, default=str)}")
 
     for key, value in db.items():
         if not key.startswith(b"utxo:"):
             continue
 
+        utxo_count += 1
         utxo = json.loads(value.decode('utf-8'))
         sender = utxo["sender"]
         receiver = utxo["receiver"]
         amount = Decimal(utxo["amount"])
         txid = utxo["txid"]
+        
+        logging.info(f"UTXO {utxo_count}: key={key.decode()}, txid={txid}, sender={sender}, receiver={receiver}, amount={amount}")
 
         # Skip change transactions explicitly
         if sender == wallet_address and receiver == wallet_address:
+            logging.debug(f"  -> Skipping change transaction for txid {txid}")
             continue
+        
+        # Check if this UTXO involves our wallet
+        involves_wallet = (sender == wallet_address or receiver == wallet_address)
+        if involves_wallet:
+            matching_utxos += 1
+            logging.debug(f"  -> UTXO involves wallet: sender={sender}, receiver={receiver}, wallet={wallet_address}")
+        else:
+            logging.debug(f"  -> UTXO does NOT involve wallet: sender={sender}, receiver={receiver}, wallet={wallet_address}")
 
         # Initialize if needed
         if txid not in transactions:
@@ -174,10 +255,15 @@ def get_transactions(wallet_address: str, limit: int = 50):
         if sender == wallet_address and receiver != wallet_address:
             transactions[txid]["sent"] += amount
             transactions[txid]["sent_to"].append(receiver)
+            logging.debug(f"  -> Added SENT transaction: txid={txid}, amount={amount}, to={receiver}")
 
-        elif receiver == wallet_address and sender != wallet_address:
+        elif receiver == wallet_address and (sender != wallet_address or sender == ""):
             transactions[txid]["received"] += amount
             transactions[txid]["received_from"].append(sender)
+            if sender == "":
+                logging.debug(f"  -> Added GENESIS transaction: txid={txid}, amount={amount}, from=GENESIS")
+            else:
+                logging.debug(f"  -> Added RECEIVED transaction: txid={txid}, amount={amount}, from={sender}")
 
     for txid, data in transactions.items():
         if data["sent"] > 0:
@@ -192,6 +278,18 @@ def get_transactions(wallet_address: str, limit: int = 50):
 
         if data["received"] > 0:
             received_from_addr = next((addr for addr in data["received_from"] if addr != wallet_address), "Unknown")
+            # Display "GENESIS" for genesis transactions with empty sender
+            if received_from_addr == "":
+                received_from_addr = "GENESIS"
+            
+            # Log genesis transaction detection
+            if received_from_addr == "GENESIS":
+                logging.info(f"*** GENESIS TRANSACTION DETECTED ***")
+                logging.info(f"  txid: {txid}")
+                logging.info(f"  counterpart: {received_from_addr}")
+                logging.info(f"  amount: {data['received']}")
+                logging.info(f"  timestamp: {data['timestamp']}")
+                
             tx_list.append({
                 "txid": txid,
                 "direction": "received",
@@ -200,75 +298,107 @@ def get_transactions(wallet_address: str, limit: int = 50):
                 "timestamp": data["timestamp"]
             })
 
+    logging.info(f"Summary: Found {utxo_count} total UTXOs, {matching_utxos} involving wallet {wallet_address}")
+    logging.info(f"Grouped into {len(transactions)} unique transactions")
+    
     tx_list.sort(key=lambda x: x["timestamp"], reverse=True)
+    
+    logging.info(f"Final transaction list has {len(tx_list)} entries")
+    logging.info("=== ALL TRANSACTIONS BEING RETURNED ===")
+    for idx, tx in enumerate(tx_list):
+        logging.info(f"  Transaction {idx+1}: txid={tx['txid']}, direction={tx['direction']}, counterpart={tx['counterpart']}, amount={tx['amount']}, timestamp={tx['timestamp']}")
 
     return tx_list[:limit]
 
-async def simulate_all_transactions():
-    while True:
-        db = get_db()
-        formatted = []
-
-        for key, value in db.items():
-            key_text = key.decode("utf-8")
-            if not key_text.startswith("utxo:"):
-                continue
-
-            try:
-                utxo = json.loads(value.decode("utf-8"))
-                txid = utxo["txid"]
-                sender = utxo["sender"]
-                receiver = utxo["receiver"]
-                amount = Decimal(utxo["amount"])
-
-                # Skip change outputs (self-to-self)
-                if sender == receiver:
-                    continue
-
-                # Skip mining rewards (no sender)
-                if sender == "":
-                    continue
-
-                # Get timestamp if available
-                tx_data_raw = db.get(f"tx:{txid}".encode())
-                if tx_data_raw:
-                    tx_data = json.loads(tx_data_raw.decode())
-                    ts = tx_data.get("timestamp", 0)
-                else:
-                    ts = 0
-
-                timestamp_iso = datetime.fromtimestamp(ts / 1000).isoformat() if ts else datetime.utcnow().isoformat()
-
-                formatted.append({
-                    "id": txid,
-                    "hash": txid,
-                    "sender": sender,
-                    "receiver": receiver,
-                    "amount": f"{amount:.8f} qBTC",
-                    "timestamp": timestamp_iso,
-                    "status": "confirmed",
-                    "_sort_ts": ts  # hidden field for sorting
-                })
-
-            except (json.JSONDecodeError, InvalidOperation, KeyError) as e:
-                print(f"Skipping bad UTXO: {e}")
-                continue
-
-        # Sort most recent first (descending by timestamp)
-        formatted.sort(key=lambda x: x["_sort_ts"], reverse=True)
-
-        # Remove internal sorting field
-        for tx in formatted:
-            tx.pop("_sort_ts", None)
-
-        update_data = {
-            "type": "transaction_update",
-            "transactions": formatted,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-
-        await websocket_manager.broadcast(update_data, "all_transactions")
-        await asyncio.sleep(10)
+# DEPRECATED: Replaced by event-based system
+# async def simulate_all_transactions():
+#     while True:
+#         try:
+#             db = get_db()
+#         except Exception as e:
+#             logging.warning(f"Database not available: {e}, sending test data")
+#             # Send test data when database is not available
+#             test_data = {
+#                 "type": "transaction_update",
+#                 "transactions": [
+#                     {
+#                         "id": "test_tx_001",
+#                         "hash": "test_tx_001",
+#                         "sender": "bqs1test_sender",
+#                         "receiver": "bqs1test_receiver",
+#                         "amount": "10.00000000 qBTC",
+#                         "timestamp": datetime.utcnow().isoformat(),
+#                         "status": "confirmed"
+#                     }
+#                 ],
+#                 "timestamp": datetime.utcnow().isoformat()
+#             }
+#             await websocket_manager.broadcast(test_data, "all_transactions")
+#             await asyncio.sleep(10)
+#             continue
+#             
+#         formatted = []
+# 
+#         for key, value in db.items():
+#             key_text = key.decode("utf-8")
+#             if not key_text.startswith("utxo:"):
+#                 continue
+# 
+#             try:
+#                 utxo = json.loads(value.decode("utf-8"))
+#                 txid = utxo["txid"]
+#                 sender = utxo["sender"]
+#                 receiver = utxo["receiver"]
+#                 amount = Decimal(utxo["amount"])
+# 
+#                 # Skip change outputs (self-to-self)
+#                 if sender == receiver:
+#                     continue
+# 
+#                 # Skip mining rewards (no sender)
+#                 if sender == "":
+#                     continue
+# 
+#                 # Get timestamp if available
+#                 tx_data_raw = db.get(f"tx:{txid}".encode())
+#                 if tx_data_raw:
+#                     tx_data = json.loads(tx_data_raw.decode())
+#                     ts = tx_data.get("timestamp", 0)
+#                 else:
+#                     ts = 0
+# 
+#                 timestamp_iso = datetime.fromtimestamp(ts / 1000).isoformat() if ts else datetime.utcnow().isoformat()
+# 
+#                 formatted.append({
+#                     "id": txid,
+#                     "hash": txid,
+#                     "sender": sender,
+#                     "receiver": receiver,
+#                     "amount": f"{amount:.8f} qBTC",
+#                     "timestamp": timestamp_iso,
+#                     "status": "confirmed",
+#                     "_sort_ts": ts  # hidden field for sorting
+#                 })
+# 
+#             except (json.JSONDecodeError, InvalidOperation, KeyError) as e:
+#                 print(f"Skipping bad UTXO: {e}")
+#                 continue
+# 
+#         # Sort most recent first (descending by timestamp)
+#         formatted.sort(key=lambda x: x["_sort_ts"], reverse=True)
+# 
+#         # Remove internal sorting field
+#         for tx in formatted:
+#             tx.pop("_sort_ts", None)
+# 
+#         update_data = {
+#             "type": "transaction_update",
+#             "transactions": formatted,
+#             "timestamp": datetime.utcnow().isoformat()
+#         }
+# 
+#         await websocket_manager.broadcast(update_data, "all_transactions")
+#         await asyncio.sleep(10)
 
 async def broadcast_to_websocket_clients(message: str):
     # Copy clients to avoid modifying set during iteration
@@ -286,59 +416,91 @@ async def broadcast_to_websocket_clients(message: str):
     for client in disconnected_clients:
         websocket_clients.remove(client)
 
+# 
+# async def simulate_combined_updates(wallet_address: str):
+#     # Send initial update immediately
+#     first_run = True
+#     while True:
+#         try:
+#             balance = get_balance(wallet_address)
+#             transactions = get_transactions(wallet_address)
+#             logging.info(f"Found {len(transactions)} transactions for wallet {wallet_address}")
+#             logging.debug(f"Transactions: {transactions}")
+#         except Exception as e:
+#             logging.warning(f"Database not available for wallet {wallet_address}: {e}, sending test data")
+#             # Send test data when database is not available
+#             test_data = {
+#                 "type": "combined_update",
+#                 "balance": "100.00000000",
+#                 "transactions": [
+#                     {
+#                         "id": "test_tx_wallet_001",
+#                         "type": "receive",
+#                         "amount": "50.00000000 qBTC",
+#                         "address": "bqs1test_sender",
+#                         "timestamp": datetime.utcnow().isoformat(),
+#                         "hash": "test_tx_wallet_001",
+#                         "status": "confirmed"
+#                     }
+#                 ]
+#             }
+#             await websocket_manager.broadcast(test_data, "combined_update", wallet_address)
+#             await asyncio.sleep(10)
+#             continue
+#         formatted = []
+# 
+#         for tx in transactions:
+#             tx_type = "send" if tx["direction"] == "sent" else "receive"
+#             
+#             amt_dec = Decimal(tx["amount"])
+#             amount_fmt = f"{abs(amt_dec):.8f} qBTC"
+# 
+#             address = tx["counterpart"] if tx["counterpart"] else "n/a"
+# 
+#             formatted.append({
+#                 "id":        tx["txid"],
+#                 "type":      tx_type,
+#                 "amount":    amount_fmt,
+#                 "address":   address,
+#                 "timestamp": datetime.fromtimestamp(tx["timestamp"] / 1000).isoformat(),
+#                 "hash":      tx["txid"],
+#                 "status":    "confirmed"
+#             })
+# 
+#         await websocket_manager.broadcast(
+#             {
+#                 "type":         "combined_update",
+#                 "balance":      f"{balance:.8f}",
+#                 "transactions": formatted
+#             },
+#             "combined_update",
+#             wallet_address
+#         )
+#         
+#         # Sleep less on first run to send initial data quickly
+#         if first_run:
+#             await asyncio.sleep(1)
+#             first_run = False
+#         else:
+#             await asyncio.sleep(10)
 
-async def simulate_combined_updates(wallet_address: str):
-    while True:
-        balance = get_balance(wallet_address)
-        transactions = get_transactions(wallet_address)
-        formatted = []
-
-        for tx in transactions:
-            tx_type = "send" if tx["direction"] == "sent" else "receive"
-            
-            amt_dec = Decimal(tx["amount"])
-            amount_fmt = f"{abs(amt_dec):.8f} qBTC"
-
-            address = tx["counterpart"] if tx["counterpart"] else "n/a"
-
-            formatted.append({
-                "id":        tx["txid"],
-                "type":      tx_type,
-                "amount":    amount_fmt,
-                "address":   address,
-                "timestamp": datetime.fromtimestamp(tx["timestamp"] / 1000).isoformat(),
-                "hash":      tx["txid"],
-                "status":    "confirmed"
-            })
-
-        await websocket_manager.broadcast(
-            {
-                "type":         "combined_update",
-                "balance":      str(balance),
-                "transactions": formatted
-            },
-            "combined_update",
-            wallet_address
-        )
-        await asyncio.sleep(10)
-
-async def simulate_l1_proofs_testnet():
-    while True:
-        db = get_db()
-        proofs = {}
-        for key, value in db.items():
-            if key.startswith(b"block:"):
-                block = json.loads(value.decode())
-                tx_ids = block["tx_ids"]
-                proofs[block["height"]] = {
-                    "blockHeight": block["height"], "merkleRoot": block["block_hash"],
-                    "bitcoinTxHash": None, "timestamp": datetime.fromtimestamp(block["timestamp"] / 1000).isoformat(),
-                    "transactions": [{"id": tx_id, "hash": tx_id, "status": "confirmed"} for tx_id in tx_ids],
-                    "status": "confirmed"
-                }
-        update_data = {"type": "l1proof_update", "proofs": list(proofs.values()), "timestamp": datetime.now().isoformat()}
-        await websocket_manager.broadcast(update_data, "l1_proofs_testnet")
-        await asyncio.sleep(10)
+# async def simulate_l1_proofs_testnet():
+#     while True:
+#         db = get_db()
+#         proofs = {}
+#         for key, value in db.items():
+#             if key.startswith(b"block:"):
+#                 block = json.loads(value.decode())
+#                 tx_ids = block["tx_ids"]
+#                 proofs[block["height"]] = {
+#                     "blockHeight": block["height"], "merkleRoot": block["block_hash"],
+#                     "bitcoinTxHash": None, "timestamp": datetime.fromtimestamp(block["timestamp"] / 1000).isoformat(),
+#                     "transactions": [{"id": tx_id, "hash": tx_id, "status": "confirmed"} for tx_id in tx_ids],
+#                     "status": "confirmed"
+#                 }
+#         update_data = {"type": "l1proof_update", "proofs": list(proofs.values()), "timestamp": datetime.now().isoformat()}
+#         await websocket_manager.broadcast(update_data, "l1_proofs_testnet")
+#         await asyncio.sleep(10)
 
 
 
@@ -357,19 +519,95 @@ async def get_balance_endpoint(wallet_address: str):
 
 @app.get("/transactions/{wallet_address}")
 async def get_transactions_endpoint(wallet_address: str, limit: int = 50):
+    logging.info(f"=== API: /transactions/{wallet_address} called (limit={limit}) ===")
+    
     # Validate inputs
     if not wallet_address.startswith('bqs') or len(wallet_address) < 20:
+        logging.error(f"Invalid wallet address format: {wallet_address}")
         raise ValidationError("Invalid wallet address format")
     
     if limit < 1 or limit > 1000:
+        logging.error(f"Invalid limit: {limit}")
         raise ValidationError("Limit must be between 1 and 1000")
     
     try:
         transactions = get_transactions(wallet_address, limit)
+        logging.info(f"API returning {len(transactions)} transactions for {wallet_address}")
         return {"wallet_address": wallet_address, "transactions": transactions}
     except Exception as e:
         logger.error(f"Error getting transactions for {wallet_address}: {str(e)}")
         raise HTTPException(status_code=500, detail="Error retrieving transactions")
+
+@app.get("/debug/utxos")
+async def debug_utxos():
+    """Debug endpoint to show all UTXOs in the database"""
+    try:
+        db = get_db()
+        utxos = []
+        count = 0
+        
+        for key, value in db.items():
+            if key.startswith(b"utxo:") and count < 20:  # Limit to first 20
+                count += 1
+                utxo_data = json.loads(value.decode())
+                utxos.append({
+                    "key": key.decode(),
+                    "txid": utxo_data.get("txid"),
+                    "sender": utxo_data.get("sender"),
+                    "receiver": utxo_data.get("receiver"),
+                    "amount": utxo_data.get("amount"),
+                    "spent": utxo_data.get("spent", False)
+                })
+        
+        return {
+            "total_shown": count,
+            "utxos": utxos
+        }
+    except Exception as e:
+        logger.error(f"Error in debug_utxos: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/debug/genesis")
+async def debug_genesis():
+    """Debug endpoint to find genesis transactions"""
+    try:
+        db = get_db()
+        genesis_txs = []
+        all_txs = []
+        
+        # Check all transaction entries
+        for key, value in db.items():
+            if key.startswith(b"tx:"):
+                tx_data = json.loads(value.decode('utf-8'))
+                txid = key.decode().replace("tx:", "")
+                all_txs.append({
+                    "txid": txid,
+                    "data": tx_data
+                })
+                
+        # Check all UTXOs for genesis patterns
+        for key, value in db.items():
+            if key.startswith(b"utxo:"):
+                utxo_data = json.loads(value.decode())
+                if utxo_data.get("sender") == "" or utxo_data.get("sender") == "GENESIS":
+                    genesis_txs.append({
+                        "key": key.decode(),
+                        "txid": utxo_data.get("txid"),
+                        "sender": utxo_data.get("sender"),
+                        "receiver": utxo_data.get("receiver"),
+                        "amount": utxo_data.get("amount"),
+                        "spent": utxo_data.get("spent", False)
+                    })
+        
+        return {
+            "genesis_utxos": genesis_txs,
+            "total_transactions": len(all_txs),
+            "first_10_transactions": all_txs[:10],
+            "possible_genesis_txids": [tx["txid"] for tx in genesis_txs]
+        }
+    except Exception as e:
+        logger.error(f"Error in debug_genesis: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
 async def health_check(request: Request):
@@ -530,7 +768,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 data = await websocket.receive_json()
                 logging.debug(f"Received: {data}")
                 
-                # Validate WebSocket message
+                # Handle ping messages
+                if data.get("type") == "ping":
+                    await websocket.send_json({"type": "pong"})
+                    continue
+                
+                # Validate WebSocket subscription message
                 try:
                     ws_request = WebSocketSubscription(**data)
                     update_type = ws_request.update_type
@@ -542,16 +785,86 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     continue
                 if update_type:
-                    websocket_manager.subscribe(websocket, update_type, wallet_address if update_type != "all_transactions" else None)
+                    websocket_manager.subscribe(websocket, update_type, wallet_address)
+                    
+                    # Send immediate acknowledgment
+                    await websocket.send_json({
+                        "type": "subscription_confirmed",
+                        "update_type": update_type,
+                        "wallet_address": wallet_address
+                    })
+                    
+                    # Send initial data immediately for new subscriptions
                     if update_type == "combined_update" and wallet_address:
-                        asyncio.create_task(simulate_combined_updates(wallet_address))
-                        logging.debug(f"Started combined_updates task for {wallet_address}")
-
-                    if update_type == "all_transactions":
-                        asyncio.create_task(simulate_all_transactions())
-
-                    #elif update_type == "bridge" and wallet_address and data.get("bridge_address") and data.get("secret"):
-                    #    asyncio.create_task(simulate_bridge_updates(wallet_address, data["secret"]))
+                        # Send initial data directly without relying on event system
+                        try:
+                            balance = get_balance(wallet_address)
+                            transactions = get_transactions(wallet_address)
+                            
+                            formatted = []
+                            logging.info(f"=== WEBSOCKET FORMATTING {len(transactions)} TRANSACTIONS ===")
+                            for idx, tx in enumerate(transactions):
+                                logging.info(f"WebSocket TX {idx+1}: txid={tx['txid']}, direction={tx['direction']}, counterpart={tx['counterpart']}, timestamp={tx['timestamp']}")
+                                
+                                tx_type = "send" if tx["direction"] == "sent" else "receive"
+                                amt_dec = Decimal(tx["amount"])
+                                amount_fmt = f"{abs(amt_dec):.8f} qBTC"
+                                address = tx["counterpart"] if tx["counterpart"] else "n/a"
+                                
+                                # Check if this is a genesis transaction
+                                logging.info(f"  Checking genesis conditions:")
+                                logging.info(f"    - txid == 'genesis_tx'? {tx['txid'] == 'genesis_tx'}")
+                                logging.info(f"    - direction == 'received'? {tx['direction'] == 'received'}")
+                                logging.info(f"    - counterpart == 'GENESIS'? {tx['counterpart'] == 'GENESIS'}")
+                                
+                                # Check if this is a genesis transaction by looking at the counterpart or txid
+                                if tx["txid"] == "genesis_tx" or tx["counterpart"] == "bqs1genesis00000000000000000000000000000000":
+                                    timestamp_str = "Genesis Block"
+                                    logging.info(f"  *** GENESIS BLOCK TIMESTAMP SET ***")
+                                else:
+                                    timestamp_str = datetime.fromtimestamp(tx["timestamp"] / 1000).isoformat() if tx["timestamp"] else "Unknown"
+                                    logging.info(f"  Regular timestamp: {timestamp_str}")
+                                
+                                formatted.append({
+                                    "id": tx["txid"],
+                                    "type": tx_type,
+                                    "amount": amount_fmt,
+                                    "address": address,
+                                    "timestamp": timestamp_str,
+                                    "hash": tx["txid"],
+                                    "status": "confirmed"
+                                })
+                            
+                            initial_data = {
+                                "type": "combined_update",
+                                "balance": f"{balance:.8f}",
+                                "transactions": formatted
+                            }
+                            
+                            await websocket.send_json(initial_data)
+                            logging.info(f"Sent initial data for wallet {wallet_address}: balance={balance}, txs={len(transactions)}")
+                            
+                        except Exception as e:
+                            logging.error(f"Error sending initial data: {e}")
+                        
+                        # Also emit event for future updates
+                        await event_bus.emit(EventTypes.WALLET_BALANCE_CHANGED, {
+                            'wallet_address': wallet_address,
+                            'reason': 'subscription'
+                        }, source='websocket')
+                        logging.debug(f"Triggered event for future updates for wallet {wallet_address}")
+                    
+                    elif update_type == "all_transactions":
+                        # Send current transaction list immediately
+                        if hasattr(app.state, 'ws_handlers'):
+                            await app.state.ws_handlers._broadcast_all_transactions_update()
+                        logging.debug("Sent initial all_transactions data")
+                    
+                    elif update_type == "l1_proofs_testnet":
+                        # Send current L1 proofs immediately
+                        if hasattr(app.state, 'ws_handlers'):
+                            await app.state.ws_handlers._broadcast_l1_proofs_update()
+                        logging.debug("Sent initial L1 proofs data")
             except json.JSONDecodeError as e:
                 logging.warning(f"Invalid JSON received: {e}")
                 await websocket.send_json({"error": "Invalid JSON", "message": str(e)})
