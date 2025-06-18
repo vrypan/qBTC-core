@@ -301,6 +301,50 @@ def get_transactions(wallet_address: str, limit: int = 50):
     logging.info(f"Summary: Found {utxo_count} total UTXOs, {matching_utxos} involving wallet {wallet_address}")
     logging.info(f"Grouped into {len(transactions)} unique transactions")
     
+    # Add pending transactions from mempool
+    logging.info(f"Checking mempool for pending transactions...")
+    logging.info(f"Current mempool size: {len(pending_transactions)}")
+    logging.info(f"Mempool transactions: {list(pending_transactions.keys())}")
+    mempool_count = 0
+    for txid, tx in pending_transactions.items():
+        # Check if this transaction involves our wallet
+        involves_wallet = False
+        
+        # Check outputs for involvement
+        for output in tx.get("outputs", []):
+            if output.get("sender") == wallet_address or output.get("receiver") == wallet_address:
+                involves_wallet = True
+                break
+        
+        if involves_wallet:
+            mempool_count += 1
+            # Determine direction and counterpart
+            for output in tx.get("outputs", []):
+                if output.get("sender") == wallet_address and output.get("receiver") != wallet_address:
+                    # Sending transaction
+                    tx_list.append({
+                        "txid": txid,
+                        "direction": "sent",
+                        "amount": f"-{output.get('amount', '0')}",
+                        "counterpart": output.get("receiver", "Unknown"),
+                        "timestamp": tx.get("timestamp", int(time.time() * 1000)),
+                        "isMempool": True,
+                        "isPending": True
+                    })
+                elif output.get("receiver") == wallet_address and output.get("sender") != wallet_address:
+                    # Receiving transaction
+                    tx_list.append({
+                        "txid": txid,
+                        "direction": "received", 
+                        "amount": f"{output.get('amount', '0')}",
+                        "counterpart": output.get("sender", "Unknown"),
+                        "timestamp": tx.get("timestamp", int(time.time() * 1000)),
+                        "isMempool": True,
+                        "isPending": True
+                    })
+    
+    logging.info(f"Found {mempool_count} pending transactions in mempool for wallet {wallet_address}")
+    
     tx_list.sort(key=lambda x: x["timestamp"], reverse=True)
     
     logging.info(f"Final transaction list has {len(tx_list)} entries")
@@ -762,6 +806,16 @@ async def worker_endpoint(request: Request):
         logger.info(f"[MEMPOOL] Added transaction {txid} to mempool. Current size: {len(pending_transactions)}")
         #db.put(b"tx:" + txid.encode(), json.dumps(transaction).encode())
 
+        # Emit mempool transaction event
+        await event_bus.emit(EventTypes.TRANSACTION_PENDING, {
+            'txid': txid,
+            'transaction': transaction,
+            'sender': sender_,
+            'receiver': receiver_,
+            'amount': send_amount
+        }, source='web')
+        logger.info(f"[EVENT] Emitted TRANSACTION_PENDING event for {txid}")
+
         await gossip_client.randomized_broadcast(transaction)
 
         return {"status": "success", "message": "Transaction broadcast successfully", "txid": txid}
@@ -846,7 +900,9 @@ async def websocket_endpoint(websocket: WebSocket):
                                     "address": address,
                                     "timestamp": timestamp_str,
                                     "hash": tx["txid"],
-                                    "status": "confirmed"
+                                    "status": "confirmed" if not tx.get("isMempool") else "pending",
+                                    "isMempool": tx.get("isMempool", False),
+                                    "isPending": tx.get("isPending", False)
                                 })
                             
                             initial_data = {

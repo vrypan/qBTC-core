@@ -6,6 +6,8 @@ from config.config import ADMIN_ADDRESS, GENESIS_ADDRESS
 from wallet.wallet import verify_transaction
 from blockchain.event_integration import emit_database_event
 from state.state import pending_transactions
+from events.event_bus import event_bus, EventTypes
+import asyncio
 import json
 import logging
 from decimal import Decimal, ROUND_DOWN
@@ -256,16 +258,49 @@ def _process_block_in_chain(block: dict):
     # Remove transactions from mempool (pending_transactions)
     # Skip the first tx_id as it's the coinbase transaction
     removed_count = 0
+    confirmed_from_mempool = []
     for txid in tx_ids[1:]:  # Skip coinbase (first transaction)
         if txid in pending_transactions:
             logging.info(f"[SYNC] Removing transaction {txid} from mempool")
             pending_transactions.pop(txid, None)
             removed_count += 1
+            confirmed_from_mempool.append(txid)
         else:
             logging.debug(f"[SYNC] Transaction {txid} not in mempool (might be from another node)")
     
     if removed_count > 0:
         logging.info(f"[SYNC] Removed {removed_count} transactions from mempool after block {block_hash}")
+    
+    # Emit confirmation events for transactions that were in mempool
+    for txid in confirmed_from_mempool:
+        # Get transaction data
+        tx_key = f"tx:{txid}".encode()
+        if tx_key in db:
+            tx_data = json.loads(db.get(tx_key).decode())
+            # Extract transaction details for the event
+            sender = None
+            receiver = None
+            for output in tx_data.get("outputs", []):
+                if output.get("sender"):
+                    sender = output["sender"]
+                if output.get("receiver"):
+                    receiver = output["receiver"]
+            
+            # Emit transaction confirmed event
+            asyncio.create_task(event_bus.emit(EventTypes.TRANSACTION_CONFIRMED, {
+                'txid': txid,
+                'transaction': {
+                    'id': txid,
+                    'hash': txid,
+                    'sender': sender,
+                    'receiver': receiver,
+                    'blockHeight': height,
+                },
+                'blockHeight': height,
+                'confirmed_from_mempool': True
+            }, source='sync'))
+            
+            logging.info(f"[SYNC] Emitted TRANSACTION_CONFIRMED event for {txid}")
     
     # Emit events for all database operations
     # Emit transaction events
