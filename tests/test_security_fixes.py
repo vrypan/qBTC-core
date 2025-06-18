@@ -93,7 +93,7 @@ class TestCoinbaseValidation:
                     "inputs": [{"txid": "prev_tx", "utxo_index": 0}],
                     "outputs": [{"receiver": "bob", "amount": "90", "utxo_index": 0}],
                     "body": {
-                        "msg_str": "alice:bob:90:12345",
+                        "msg_str": f"alice:bob:90:{int(time.time()*1000)}:1",  # Added chain ID
                         "signature": "dummy_sig",
                         "pubkey": "dummy_pubkey",
                         "transaction_data": ""
@@ -102,8 +102,9 @@ class TestCoinbaseValidation:
             ]
         }
         
-        # Mock signature verification
-        with patch('sync.sync.verify_transaction', return_value=True):
+        # Mock signature verification and chain ID
+        with patch('sync.sync.verify_transaction', return_value=True), \
+             patch('sync.sync.CHAIN_ID', 1):
             # Should raise error for excessive coinbase
             with pytest.raises(ValueError, match="Invalid coinbase amount"):
                 _process_block_in_chain(block)
@@ -158,7 +159,7 @@ class TestCoinbaseValidation:
                         {"receiver": "alice", "amount": "9.91", "utxo_index": 1}
                     ],
                     "body": {
-                        "msg_str": "alice:bob:90:12345",
+                        "msg_str": f"alice:bob:90:{int(time.time()*1000)}:1",  # Added chain ID
                         "signature": "dummy_sig",
                         "pubkey": "dummy_pubkey",
                         "transaction_data": ""
@@ -167,8 +168,9 @@ class TestCoinbaseValidation:
             ]
         }
         
-        # Mock signature verification
-        with patch('sync.sync.verify_transaction', return_value=True):
+        # Mock signature verification and chain ID
+        with patch('sync.sync.verify_transaction', return_value=True), \
+             patch('sync.sync.CHAIN_ID', 1):
             # Should not raise error
             _process_block_in_chain(block)
 
@@ -218,7 +220,7 @@ class TestDoubleSpendingPrevention:
                     "inputs": [{"txid": "prev_tx", "utxo_index": 0}],
                     "outputs": [{"receiver": "bob", "amount": "100", "utxo_index": 0}],
                     "body": {
-                        "msg_str": "alice:bob:100:12345",
+                        "msg_str": f"alice:bob:100:{int(time.time()*1000)}:1",  # Added chain ID
                         "signature": "dummy_sig1",
                         "pubkey": "dummy_pubkey",
                         "transaction_data": ""
@@ -230,7 +232,7 @@ class TestDoubleSpendingPrevention:
                     "inputs": [{"txid": "prev_tx", "utxo_index": 0}],
                     "outputs": [{"receiver": "charlie", "amount": "100", "utxo_index": 0}],
                     "body": {
-                        "msg_str": "alice:charlie:100:12346",
+                        "msg_str": f"alice:charlie:100:{int(time.time()*1000)}:1",  # Added chain ID
                         "signature": "dummy_sig2",
                         "pubkey": "dummy_pubkey",
                         "transaction_data": ""
@@ -239,8 +241,9 @@ class TestDoubleSpendingPrevention:
             ]
         }
         
-        # Mock signature verification
-        with patch('sync.sync.verify_transaction', return_value=True):
+        # Mock signature verification and chain ID
+        with patch('sync.sync.verify_transaction', return_value=True), \
+             patch('sync.sync.CHAIN_ID', 1):
             # Should raise error for double-spend
             with pytest.raises(ValueError, match="Double spend detected"):
                 _process_block_in_chain(block)
@@ -298,7 +301,7 @@ class TestDoubleSpendingPrevention:
                     "inputs": [{"txid": "prev_tx1", "utxo_index": 0}],
                     "outputs": [{"receiver": "bob", "amount": "100", "utxo_index": 0}],
                     "body": {
-                        "msg_str": "alice:bob:100:12345",
+                        "msg_str": f"alice:bob:100:{int(time.time()*1000)}:1",  # Added chain ID
                         "signature": "dummy_sig1",
                         "pubkey": "dummy_pubkey",
                         "transaction_data": ""
@@ -310,7 +313,7 @@ class TestDoubleSpendingPrevention:
                     "inputs": [{"txid": "prev_tx2", "utxo_index": 0}],
                     "outputs": [{"receiver": "charlie", "amount": "50", "utxo_index": 0}],
                     "body": {
-                        "msg_str": "alice:charlie:50:12346",
+                        "msg_str": f"alice:charlie:50:{int(time.time()*1000)}:1",  # Added chain ID
                         "signature": "dummy_sig2",
                         "pubkey": "dummy_pubkey",
                         "transaction_data": ""
@@ -319,8 +322,9 @@ class TestDoubleSpendingPrevention:
             ]
         }
         
-        # Mock signature verification
-        with patch('sync.sync.verify_transaction', return_value=True):
+        # Mock signature verification and chain ID
+        with patch('sync.sync.verify_transaction', return_value=True), \
+             patch('sync.sync.CHAIN_ID', 1):
             # Should not raise error
             _process_block_in_chain(block)
 
@@ -373,7 +377,7 @@ class TestExactOutputValidation:
                         {"receiver": "alice", "amount": "9.9", "utxo_index": 1}  # Extra change
                     ],
                     "body": {
-                        "msg_str": "alice:bob:100:12345",  # Authorized 100
+                        "msg_str": f"alice:bob:100:{int(time.time()*1000)}:1",  # Added chain ID  # Authorized 100
                         "signature": "dummy_sig",
                         "pubkey": "dummy_pubkey",
                         "transaction_data": ""
@@ -382,8 +386,9 @@ class TestExactOutputValidation:
             ]
         }
         
-        # Mock signature verification
-        with patch('sync.sync.verify_transaction', return_value=True):
+        # Mock signature verification and chain ID
+        with patch('sync.sync.verify_transaction', return_value=True), \
+             patch('sync.sync.CHAIN_ID', 1):
             # Should raise error for incorrect amount
             with pytest.raises(ValueError, match="authorized amount 100 != amount sent to recipient 90"):
                 _process_block_in_chain(block)
@@ -432,7 +437,7 @@ class TestExactOutputValidation:
                         {"receiver": "admin_addr", "amount": "0.1", "utxo_index": 1}  # Fee
                     ],
                     "body": {
-                        "msg_str": "alice:bob:100:12345",  # Authorized 100
+                        "msg_str": f"alice:bob:100:{int(time.time()*1000)}:1",  # Added chain ID  # Authorized 100
                         "signature": "dummy_sig",
                         "pubkey": "dummy_pubkey",
                         "transaction_data": ""
@@ -441,8 +446,9 @@ class TestExactOutputValidation:
             ]
         }
         
-        # Mock signature verification
-        with patch('sync.sync.verify_transaction', return_value=True):
+        # Mock signature verification and chain ID
+        with patch('sync.sync.verify_transaction', return_value=True), \
+             patch('sync.sync.CHAIN_ID', 1):
             # Should not raise error
             _process_block_in_chain(block)
 

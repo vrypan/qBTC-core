@@ -18,3 +18,7 @@ DIFFICULTY_ADJUSTMENT_INTERVAL = int(os.environ.get("DIFFICULTY_ADJUSTMENT_INTER
 BLOCK_TIME_TARGET = int(os.environ.get("BLOCK_TIME_TARGET", "10"))
 GENESIS_ADDRESS = "bqs1genesis00000000000000000000000000000000"
 ADMIN_ADDRESS = os.getenv("ADMIN_ADDRESS", "bqs1HpmbeSd8nhRpq5zX5df91D3Xy8pSUovmV")
+# Chain ID for replay protection (default: 1 for mainnet, can be overridden for testnets)
+CHAIN_ID = int(os.getenv("CHAIN_ID", "1"))
+# Transaction expiration time in seconds (default: 1 hour)
+TX_EXPIRATION_TIME = int(os.getenv("TX_EXPIRATION_TIME", "3600"))

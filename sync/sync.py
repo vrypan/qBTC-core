@@ -2,7 +2,7 @@ from database.database import get_db, get_current_height
 from rocksdict import WriteBatch
 from blockchain.blockchain import Block, calculate_merkle_root, validate_pow
 from blockchain.chain_singleton import get_chain_manager
-from config.config import ADMIN_ADDRESS, GENESIS_ADDRESS
+from config.config import ADMIN_ADDRESS, GENESIS_ADDRESS, CHAIN_ID, TX_EXPIRATION_TIME
 from wallet.wallet import verify_transaction
 from blockchain.event_integration import emit_database_event
 from state.state import pending_transactions
@@ -10,6 +10,7 @@ from events.event_bus import event_bus, EventTypes
 import asyncio
 import json
 import logging
+import time
 from decimal import Decimal, ROUND_DOWN
 from typing import List, Dict, Tuple, Optional
 
@@ -199,9 +200,33 @@ def _process_block_in_chain(block: dict):
             else:
                 msg_str = body.get("msg_str", "")
                 parts = msg_str.split(":")
-                if len(parts) != 4:
+                # Updated format: sender:receiver:amount:timestamp:chain_id
+                if len(parts) == 4:
+                    # Legacy format without chain ID - reject for replay protection
+                    raise ValueError(f"Transaction {txid} missing chain ID - potential replay attack")
+                elif len(parts) != 5:
                     raise ValueError(f"Malformed msg_str in tx {txid}: {msg_str}")
-                from_, to_, total_authorized, time_ = parts
+                from_, to_, total_authorized, time_, tx_chain_id = parts
+                
+                # Validate chain ID
+                if int(tx_chain_id) != CHAIN_ID:
+                    raise ValueError(f"Invalid chain ID in tx {txid}: expected {CHAIN_ID}, got {tx_chain_id}")
+                
+                # Validate timestamp for expiration
+                try:
+                    tx_timestamp = int(time_)
+                    current_time = int(time.time() * 1000)  # Convert to milliseconds
+                    tx_age = (current_time - tx_timestamp) / 1000  # Age in seconds
+                    
+                    if tx_age > TX_EXPIRATION_TIME:
+                        raise ValueError(f"Transaction {txid} expired: age {tx_age}s > max {TX_EXPIRATION_TIME}s")
+                    
+                    # Reject transactions with future timestamps (more than 5 minutes in the future)
+                    if tx_age < -300:  # -300 seconds = 5 minutes in the future
+                        raise ValueError(f"Transaction {txid} has future timestamp: {-tx_age}s in the future")
+                        
+                except (ValueError, TypeError) as e:
+                    raise ValueError(f"Invalid timestamp in tx {txid}: {time_}")
 
             total_available = Decimal("0")
             total_required = Decimal("0")
