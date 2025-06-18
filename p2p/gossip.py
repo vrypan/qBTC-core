@@ -12,6 +12,7 @@ import asyncio
 import socket
 import json
 import logging
+import random
 
 from protobuf.blockchain_pb2 import Block, Transaction
 from protobuf.gossip_pb2 import GossipMessage, GossipMessageType, GossipStatusData, GossipTransactionData
@@ -75,44 +76,12 @@ class GossipNode:
             except Exception as e:
                 print(f"[!] Failed to gossip to {peer}: {e}")
 
-    async def gossip_transaction(self, transaction: Transaction, exclude_peers=()):
-        """
-        Gossip a transaction to all peers in the network.
-        """
-        tx_hash = calculate_tx_hash(transaction)
-        message = GossipMessage(
-            type = GossipMessageType.TRANSACTION,
-            transaction_data=GossipTransactionData(
-                transaction=transaction,
-                hash=tx_hash
-            )
-        )
-        asyncio.create_task(self.gossip_message(message))
-        """
-        message_bytes = message.SerializeToString()
-        peers = self._dht_node.get_peers()
-        for peer in peers:
-            node_data = await self._dht_node.get(f"peer:{peer[0]}:{peer[1]}")
-            if not node_data:
-                print(f"[!] Failed to get gossip port for {peer}")
-                continue
-            try:
-                node_json = json.loads(node_data)
-                port = node_json["gossip_port"]
-                if f"{peer[0]}:{port}" in exclude_peers:
-                    continue
-                self._sock.sendto(message_bytes, (peer[0], port))
-                print(f"[<] Gossiped transaction to {peer[0]}:{port}, hash={tx_hash.hex()}")
-            except Exception as e:
-                print(f"[!] Failed to gossip to {peer}: {e}")
-        """
     async def gossip_message(self, message: GossipMessage, exclude_peers=()):
         """
         Gossip a messages to peers in the network.
         """
         MAX_PEERS = 3
         message_bytes = message.SerializeToString()
-        import random
         peers = self._dht_node.get_peers()
         if len(peers) > MAX_PEERS:
             peers = random.sample(peers, MAX_PEERS)
@@ -173,7 +142,11 @@ class GossipNode:
         while True:
             # block = random_block(height=10)
             transaction = random_transaction()
-            asyncio.create_task(self.gossip_transaction(transaction))
+            message = GossipMessage(
+                type=GossipMessageType.TRANSACTION,
+                transaction_data=GossipTransactionData(transaction=transaction)
+            )
+            asyncio.create_task(self.gossip_message(message))
             await asyncio.sleep(10)
 
     async def broadcast_status(self):

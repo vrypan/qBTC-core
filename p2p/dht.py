@@ -64,6 +64,8 @@ class KademliaNode:
 
     async def _ping(self, ip: str, port: int) -> bool:
         try:
+            if not self._server.protocol:
+                return False
             response = await self._server.protocol.ping((ip, port), self._server.node.id)
             if response is None:
                 return False
@@ -139,6 +141,15 @@ class KademliaNode:
             try:
                 data = json.dumps(self._properties)
                 await self.set(self._peer_key, data)
+                """
+                ***IMPORTANT***
+                Setting this key like this is vulnerable to attacks. A malicious actor could
+                reset all the keys to an invalid IP and disrupt the network.
+                Each node will periodically reset the key to the correct value, the attacker
+                can sustain an attack for as long as they want.
+
+                To be updated with some type of signed keys.
+                """
                 print(f"[✓] DHT set key={self._peer_key} to value={data}")
             except Exception as e:
                 print(f"[!] DHT set error: {e}")
