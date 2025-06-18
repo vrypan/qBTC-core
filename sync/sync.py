@@ -4,6 +4,8 @@ from blockchain.blockchain import Block, calculate_merkle_root, validate_pow
 from blockchain.chain_singleton import get_chain_manager
 from config.config import ADMIN_ADDRESS, GENESIS_ADDRESS
 from wallet.wallet import verify_transaction
+from blockchain.event_integration import emit_database_event
+from state.state import pending_transactions
 import json
 import logging
 from decimal import Decimal, ROUND_DOWN
@@ -250,6 +252,39 @@ def _process_block_in_chain(block: dict):
     
     db.write(batch)
     logging.info("[SYNC] Stored block %s (height %s) successfully", block_hash, height)
+    
+    # Remove transactions from mempool (pending_transactions)
+    # Skip the first tx_id as it's the coinbase transaction
+    removed_count = 0
+    for txid in tx_ids[1:]:  # Skip coinbase (first transaction)
+        if txid in pending_transactions:
+            logging.info(f"[SYNC] Removing transaction {txid} from mempool")
+            pending_transactions.pop(txid, None)
+            removed_count += 1
+        else:
+            logging.debug(f"[SYNC] Transaction {txid} not in mempool (might be from another node)")
+    
+    if removed_count > 0:
+        logging.info(f"[SYNC] Removed {removed_count} transactions from mempool after block {block_hash}")
+    
+    # Emit events for all database operations
+    # Emit transaction events
+    for txid in tx_ids:
+        tx_key = f"tx:{txid}".encode()
+        if tx_key in db:
+            emit_database_event(tx_key, db.get(tx_key))
+    
+    # Emit UTXO events - use full_transactions instead of undefined block_transactions
+    for tx in full_transactions:
+        if tx and "txid" in tx:
+            txid = tx["txid"]
+            for out in tx.get("outputs", []):
+                out_key = f"utxo:{txid}:{out.get('utxo_index', 0)}".encode()
+                if out_key in db:
+                    emit_database_event(out_key, db.get(out_key))
+    
+    # Emit block event
+    emit_database_event(block_key, db.get(block_key))
 
 def get_blockchain_info() -> Dict:
     """Get current blockchain information"""
