@@ -639,6 +639,19 @@ async def health_check(request: Request):
             status_code=503
         )
 
+@app.get("/debug/mempool")
+async def debug_mempool():
+    """Debug endpoint to check mempool status"""
+    try:
+        return {
+            "mempool_size": len(pending_transactions),
+            "transactions": list(pending_transactions.keys()),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error getting mempool status: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error retrieving mempool")
+
 @app.post("/worker")
 async def worker_endpoint(request: Request):
     """Process transaction broadcast requests with validation"""
@@ -746,6 +759,7 @@ async def worker_endpoint(request: Request):
         for output in transaction["outputs"]:
             output["txid"] = txid
         pending_transactions[txid] = transaction
+        logger.info(f"[MEMPOOL] Added transaction {txid} to mempool. Current size: {len(pending_transactions)}")
         #db.put(b"tx:" + txid.encode(), json.dumps(transaction).encode())
 
         await gossip_client.randomized_broadcast(transaction)

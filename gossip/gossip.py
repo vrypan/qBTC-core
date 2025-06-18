@@ -203,6 +203,7 @@ class GossipNode:
                 msg["txid"] = txid
                 
                 pending_transactions[txid] = msg
+                logging.info(f"[MEMPOOL] Added gossiped transaction {txid} to mempool. Current size: {len(pending_transactions)}")
                 # Add to seen_tx BEFORE broadcasting to prevent loops
                 self.seen_tx.add(txid)
                 self.seen_tx_timestamps[txid] = int(time.time())
