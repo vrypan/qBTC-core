@@ -14,6 +14,7 @@ from wallet.wallet import verify_transaction
 from pydantic import BaseModel
 from blockchain.blockchain import sha256d, serialize_transaction
 from state.state import pending_transactions
+from config.config import CHAIN_ID
 
 # Import security components
 from models.validation import (
@@ -739,14 +740,28 @@ async def worker_endpoint(request: Request):
         pubkey_hex = pubkey_bytes.hex()
         message_str = message_bytes.decode("utf-8")
         
+        # Store original message for signature verification
+        original_message_str = message_str
+        
         parts = message_str.split(":")
-        if len(parts) < 3:
-            raise ValidationError("Invalid message format")
+        if len(parts) == 3:
+            # Old format - add timestamp and chain_id for compatibility
+            sender_, receiver_, send_amount = parts[0], parts[1], parts[2]
+            timestamp = str(int(time.time() * 1000))
+            chain_id = str(CHAIN_ID)
+            # Update message_str to new format for storage
+            message_str = f"{sender_}:{receiver_}:{send_amount}:{timestamp}:{chain_id}"
+        elif len(parts) == 5:
+            # New format with timestamp and chain_id
+            sender_, receiver_, send_amount, timestamp, chain_id = parts
+            # Validate chain_id
+            if int(chain_id) != CHAIN_ID:
+                raise ValidationError(f"Invalid chain ID: expected {CHAIN_ID}, got {chain_id}")
+        else:
+            raise ValidationError("Invalid message format - expected sender:receiver:amount:timestamp:chain_id")
         
-        sender_, receiver_, send_amount = parts[0], parts[1], parts[2]
-        
-        # Verify transaction signature
-        if not verify_transaction(message_str, signature_hex, pubkey_hex):
+        # Verify transaction signature against original message
+        if not verify_transaction(original_message_str, signature_hex, pubkey_hex):
             raise InvalidSignatureError("Transaction signature verification failed")
 
         inputs = []
