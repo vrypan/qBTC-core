@@ -4,6 +4,7 @@ Event-based WebSocket handlers
 
 import logging
 import json
+import asyncio
 from datetime import datetime
 from decimal import Decimal
 from typing import Set, Dict
@@ -29,23 +30,54 @@ class WebSocketEventHandlers:
         try:
             tx_data = event.data
             txid = tx_data.get('txid')
+            transaction = tx_data.get('transaction', {})
+            confirmed_from_mempool = tx_data.get('confirmed_from_mempool', False)
             
-            logger.info(f"Processing confirmed transaction: {txid}")
+            logger.info(f"Processing confirmed transaction: {txid} (from_mempool: {confirmed_from_mempool})")
+            
+            # Always collect affected wallets from the transaction
+            affected_wallets = set()
+            if transaction.get('sender'):
+                affected_wallets.add(transaction.get('sender'))
+            if transaction.get('receiver'):
+                affected_wallets.add(transaction.get('receiver'))
+            
+            # If this was a mempool transaction, we need to update affected wallets with a delay
+            if confirmed_from_mempool:
+                logger.info(f"Transaction {txid} was confirmed from mempool, scheduling wallet updates")
+                
+                # Schedule wallet updates with a longer delay to ensure everything is processed
+                async def delayed_wallet_update():
+                    await asyncio.sleep(1.0)  # Wait 1 second to ensure all processing is done
+                    logger.info(f"Executing delayed wallet updates for transaction {txid}")
+                    for wallet in affected_wallets:
+                        logger.info(f"Updating wallet {wallet} after confirming {txid}")
+                        await self._broadcast_wallet_update(wallet)
+                
+                # Create the task to run in background
+                asyncio.create_task(delayed_wallet_update())
             
             # Update all_transactions subscribers
             await self._broadcast_all_transactions_update()
             
-            # Update affected wallets
+            # Check for affected wallets from outputs (for regular confirmed transactions)
             affected_wallets = set()
             
-            # Add sender and receiver from outputs
-            for output in tx_data.get('outputs', []):
-                sender = output.get('sender')
-                receiver = output.get('receiver')
-                if sender:
-                    affected_wallets.add(sender)
-                if receiver:
-                    affected_wallets.add(receiver)
+            # Try new structure first
+            if transaction.get('sender'):
+                affected_wallets.add(transaction.get('sender'))
+            if transaction.get('receiver'):
+                affected_wallets.add(transaction.get('receiver'))
+            
+            # Fall back to old structure if needed
+            if not affected_wallets:
+                for output in tx_data.get('outputs', []):
+                    sender = output.get('sender')
+                    receiver = output.get('receiver')
+                    if sender:
+                        affected_wallets.add(sender)
+                    if receiver:
+                        affected_wallets.add(receiver)
             
             # Update each affected wallet
             for wallet in affected_wallets:
@@ -58,10 +90,43 @@ class WebSocketEventHandlers:
         """Handle pending transaction events"""
         try:
             tx_data = event.data
+            txid = tx_data.get('txid')
+            transaction = tx_data.get('transaction')
             
-            # For now, we might not show pending transactions
-            # But this could be extended to show pending status
-            logger.debug(f"Pending transaction: {tx_data.get('txid')}")
+            logger.info(f"Processing pending transaction: {txid}")
+            
+            # Broadcast mempool transaction to relevant subscribers
+            mempool_msg = {
+                "type": "mempool_transaction",
+                "transaction": {
+                    "id": txid,
+                    "hash": txid,
+                    "sender": tx_data.get('sender'),
+                    "receiver": tx_data.get('receiver'),
+                    "amount": tx_data.get('amount'),
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "isMempool": True,
+                    "isPending": True
+                }
+            }
+            
+            # Collect affected wallets
+            affected_wallets = set()
+            if tx_data.get('sender'):
+                affected_wallets.add(tx_data.get('sender'))
+            if tx_data.get('receiver'):
+                affected_wallets.add(tx_data.get('receiver'))
+            
+            # Broadcast mempool transaction to affected wallet subscribers
+            for wallet in affected_wallets:
+                # Send targeted message to wallet subscribers
+                await self.websocket_manager.broadcast(mempool_msg, "mempool_transaction", wallet)
+            
+            logger.info(f"Broadcasted mempool transaction {txid} to affected wallets: {affected_wallets}")
+            
+            # Also trigger wallet balance updates
+            for wallet in affected_wallets:
+                await self._broadcast_wallet_update(wallet)
             
         except Exception as e:
             logger.error(f"Error handling pending transaction: {e}")
@@ -170,8 +235,10 @@ class WebSocketEventHandlers:
         """Broadcast update for specific wallet"""
         try:
             from web.web import get_balance, get_transactions
+            from state.state import pending_transactions
             
             logger.info(f"Broadcasting wallet update for: {wallet_address}")
+            logger.info(f"Current mempool before update: {list(pending_transactions.keys())}")
             
             balance = get_balance(wallet_address)
             transactions = get_transactions(wallet_address)
@@ -200,7 +267,9 @@ class WebSocketEventHandlers:
                     "address": address,
                     "timestamp": timestamp_str,
                     "hash": tx["txid"],
-                    "status": "confirmed"
+                    "status": "confirmed" if not tx.get("isMempool") else "pending",
+                    "isMempool": tx.get("isMempool", False),
+                    "isPending": tx.get("isPending", False)
                 })
             
             update_data = {

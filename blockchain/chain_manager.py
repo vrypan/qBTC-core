@@ -462,8 +462,17 @@ class ChainManager:
         
         # Create new UTXOs
         for idx, out in enumerate(tx.get("outputs", [])):
+            # Create proper UTXO record with all necessary fields
+            utxo_record = {
+                "txid": txid,
+                "utxo_index": idx,
+                "sender": out.get('sender', ''),
+                "receiver": out.get('receiver', ''),
+                "amount": str(out.get('amount', '0')),  # Ensure string to avoid scientific notation
+                "spent": False  # New UTXOs are always unspent
+            }
             utxo_key = f"utxo:{txid}:{idx}".encode()
-            batch.put(utxo_key, json.dumps(out).encode())
+            batch.put(utxo_key, json.dumps(utxo_record).encode())
         
         # Store transaction
         batch.put(f"tx:{txid}".encode(), json.dumps(tx).encode())

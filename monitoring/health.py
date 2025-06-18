@@ -318,4 +318,3 @@ class HealthMonitor:
 
 # Global health monitor instance
 health_monitor = HealthMonitor()
-

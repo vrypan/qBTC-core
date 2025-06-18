@@ -25,6 +25,9 @@ The cryptographic layer is modular, allowing ML-DSA to be replaced with other po
 - ⛓️ **Consensus Engine** with chain reorganization support
 - 🔄 **Fork Resolution** using cumulative difficulty
 - 🧠 **Protobuf-encoded** Transactions and Blocks
+- 📊 **Integrated Monitoring** with Prometheus & Grafana
+- 🛡️ **Security Suite** with rate limiting, DDoS protection, and attack detection
+- 🎯 **Event-Driven Architecture** for real-time updates
 - 🚀 Built with **Python, FastAPI, and asyncio**
 
 ## 📦 Architecture Overview
@@ -44,14 +47,21 @@ The cryptographic layer is modular, allowing ML-DSA to be replaced with other po
 | Blockchain Logic  | <-----> | Protobuf Structures  |
 | - ChainManager    |         | - Blocks, Txns       |
 | - Merkle Root     |         +----------------------+
-| - UTXO State      |
-| - Fork Resolution |
-+-------------------+
-         |
-         v
-+----------------------+
-| Local DB (RocksDB)   |
-+----------------------+
+| - UTXO State      |                 |
+| - Fork Resolution |                 v
++-------------------+         +----------------------+
+         |                    | Security Middleware  |
+         v                    | - Rate Limiting      |
++----------------------+      | - DDoS Protection    |
+| Event Bus System     |      | - Attack Detection   |
+| - Real-time Updates  |      +----------------------+
++----------------------+                |
+         |                              v
+         v                    +----------------------+
++----------------------+      | Monitoring Stack     |
+| Local DB (RocksDB)   |      | - Prometheus Metrics |
++----------------------+      | - Grafana Dashboards |
+                              +----------------------+
 ```
 
 ## 🛠 Getting Started
@@ -89,7 +99,7 @@ Before starting a node, you must generate a wallet file:
 python3 wallet/wallet.py
 ```
 
-This will create a `wallet.json` file containing your ML-DSA public/private keypair encrypted with a passphrase.
+This will create a `wallet.json` file containing your ML-DSA-87 (post-quantum secure) public/private keypair encrypted with a passphrase.
 
 **Keep it safe** — this is your validator's identity and signing authority.
 
@@ -124,77 +134,77 @@ Where `8009 8010` are example DHT and gossip ports on your local server.
 
 ## 🐳 Docker Development Environment
 
+### Available Docker Configurations
+
+We provide several Docker Compose configurations for different use cases:
+
+1. **docker-compose.test.yml** - 3-node test network with full monitoring stack
+2. **docker-compose.bootstrap.yml** - Production bootstrap server with secure public Grafana
+3. **docker-compose.validator.yml** - Validator node connecting to mainnet
+4. **docker-compose.yml** - Default 3-node test setup
+
 ### Option 1: Join the Existing qBTC Network
 
-To run a single node and connect to the existing qBTC network:
+To run a validator node and connect to the existing qBTC network:
 
 ```bash
-# Create a docker-compose.single.yml file
-cat > docker-compose.single.yml << 'EOF'
-version: '3.8'
-
-services:
-  qbtc-node:
-    build: .
-    container_name: qbtc-node
-    environment:
-      - ROCKSDB_PATH=/data/ledger.rocksdb
-      - WALLET_FILE=/data/wallet.json
-      - WALLET_PASSWORD=your_secure_password_here
-    volumes:
-      - qbtc-data:/data
-      - ./wallet.json:/data/wallet.json:ro
-    ports:
-      - "8080:8080"  # API port
-      - "8332:8332"  # RPC port
-      - "7002:7002"  # Gossip port
-      - "8001:8001"  # DHT port
-    command: python main.py 8001 7002 --Bootstrap_ip api.bitcoinqs.org --Bootstrap_port 8001 --wallet /data/wallet.json
-    restart: unless-stopped
-
-volumes:
-  qbtc-data:
-EOF
-
 # Generate a wallet if you don't have one
 python3 wallet/wallet.py
 
-# Start the node
-docker compose -f docker-compose.single.yml up -d
+# Start the validator node
+docker compose -f docker-compose.validator.yml up -d
 
 # View logs
-docker compose -f docker-compose.single.yml logs -f
+docker compose -f docker-compose.validator.yml logs -f
+
+# Access monitoring dashboard
+# Grafana: http://localhost:3000 (admin/admin)
+# Prometheus: http://localhost:9090
 ```
 
-### Configuration Notes
+### Option 2: Run a Production Bootstrap Server
 
-- **Wallet**: Place your `wallet.json` in the project root directory
-- **Password**: Update `WALLET_PASSWORD` in the compose file
-- **Ports**: Adjust if you have conflicts with existing services
-- **Data**: Stored in Docker volumes for persistence
-
-### Option 2: Local Test Network
-
-If you want to test locally before joining the main network, we provide a 3-node test network:
+For running a bootstrap server with secure public monitoring:
 
 ```bash
-# Start the 3-node test network
-docker compose up -d
+# Configure SSL certificates in monitoring/nginx/ssl/
+# Update nginx configuration in monitoring/nginx/nginx-prod.conf
+
+# Start the bootstrap server
+docker compose -f docker-compose.bootstrap.yml up -d
+
+# Grafana will be available at https://your-domain.com
+```
+
+### Option 3: Local Test Network with Monitoring
+
+For local development and testing with full monitoring:
+
+```bash
+# Start the 3-node test network with monitoring
+docker compose -f docker-compose.test.yml up -d
 
 # This creates:
 # - Bootstrap node: localhost:8080 (API) / localhost:8332 (RPC)
 # - Validator 1: localhost:8081 (API) / localhost:8333 (RPC)
 # - Validator 2: localhost:8082 (API) / localhost:8334 (RPC)
 # - Redis: localhost:6379 (for rate limiting)
+# - Prometheus: localhost:9090 (metrics collection)
+# - Grafana: localhost:3000 (monitoring dashboards)
 
 # View logs
-docker compose logs -f
+docker compose -f docker-compose.test.yml logs -f
+
+# Access monitoring
+# - Grafana: http://localhost:3000 (admin/admin)
+# - View pre-configured qBTC dashboard
+# - Monitor node health, block production, network stats
 
 # Stop the network
-docker compose down
+docker compose -f docker-compose.test.yml down
 
 # Stop and remove all data (fresh start)
-docker compose down -v
+docker compose -f docker-compose.test.yml down -v
 ```
 
 The bootstrap node starts with genesis funds (21M qBTC) at address `bqs1HpmbeSd8nhRpq5zX5df91D3Xy8pSUovmV`.
@@ -239,10 +249,34 @@ You can simulate multiple validators by launching separate containers or Python 
 | `gossip/` | Gossip protocol for block syncing |
 | `protobuf.proto` | Message format for blocks and txns |
 | `database/` | Local RocksDB storage abstraction |
-| `wallet/` | Post-quantum key management (ML-DSA) |
+| `wallet/` | Post-quantum key management (ML-DSA-87) |
 | `rpc/` | Bitcoin-compatible RPC (getblocktemplate, submitblock) |
-| `web/` | FastAPI REST endpoints |
-| `security/` | Rate limiting, DDoS protection |
+| `web/` | FastAPI REST endpoints & WebSocket handlers |
+| `security/` | Rate limiting, DDoS protection, attack detection |
+| `monitoring/` | Prometheus & Grafana configurations |
+| `models/` | Pydantic validation models |
+| `errors/` | Custom exception handling |
+| `middleware/` | Security & error handling middleware |
+| `events/` | Event bus system for real-time updates |
+| `scripts/` | Utility scripts for maintenance |
+
+## 📊 Monitoring
+
+Each qBTC node exposes Prometheus metrics at the `/health` endpoint. The monitoring stack includes:
+
+- **Prometheus**: Collects metrics from all nodes
+- **Grafana**: Pre-configured dashboards showing:
+  - Node health and uptime
+  - Blockchain height and sync status
+  - Transaction throughput
+  - Mempool size
+  - Peer connections
+  - Mining statistics
+  - Network difficulty
+
+Access monitoring dashboards:
+- Grafana: http://localhost:3000 (default: admin/admin)
+- Prometheus: http://localhost:9090
 
 ## ⛏️ Submitting & Mining Transactions
 
@@ -297,12 +331,17 @@ Example Output:
 
 ## 🔐 Security Notes
 
-- Transactions use **ML-DSA** for post-quantum-safe signing.
-- Each validator announces itself via DHT and syncs using gossip.
-- Merkle roots ensure transaction integrity in each block.
-- Future work includes replay protection, rate limiting, TLS, and full PoW consensus validation.
-
-Internal/external audits can be found in the audits folder we are working our way through these issues in order of criticality
+- Transactions use **ML-DSA-87** for post-quantum-safe signing
+- Each validator announces itself via DHT and syncs using gossip
+- Merkle roots ensure transaction integrity in each block
+- **Implemented Security Features:**
+  - Rate limiting with Redis backend
+  - DDoS protection middleware
+  - Attack pattern detection
+  - Bot detection system
+  - Peer reputation tracking
+  - Security event logging
+- Future work includes replay protection, TLS, and additional consensus validation
 
 ## 📈 Roadmap
 
@@ -311,8 +350,11 @@ Internal/external audits can be found in the audits folder we are working our wa
 - ✅ Rate limiting & DDoS protection
 - ✅ Fork Choice Rule (longest chain by cumulative difficulty)
 - ✅ Chain reorganization & orphan block management
-- 🔒 TLS + Peer Authentication
 - ✅ Difficulty Adjustment Algorithm
+- ✅ Integrated monitoring with Prometheus & Grafana
+- ✅ Event-driven architecture for real-time updates
+- ✅ Security middleware suite
+- 🔒 TLS + Peer Authentication
 - 🧮 Fee Market & Miner Incentives
 - 🧹 UTXO Pruning & State Compression
 
@@ -329,8 +371,6 @@ PRs and issues welcome! To contribute:
 3. Commit your changes
 4. Push to the branch
 5. Open a PR
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
 ## 🚀 Authors
 

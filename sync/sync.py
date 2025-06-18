@@ -6,6 +6,8 @@ from config.config import ADMIN_ADDRESS, GENESIS_ADDRESS
 from wallet.wallet import verify_transaction
 from blockchain.event_integration import emit_database_event
 from state.state import pending_transactions
+from events.event_bus import event_bus, EventTypes
+import asyncio
 import json
 import logging
 from decimal import Decimal, ROUND_DOWN
@@ -42,7 +44,24 @@ def _process_blocks_from_peer_impl(blocks: list[dict]):
         if isinstance(raw_blocks, dict):
             raw_blocks = [raw_blocks]
 
-        blocks = sorted(raw_blocks, key=lambda b: b["height"])
+        # Sort blocks by height, handling missing or invalid height values
+        def get_height(block):
+            height = block.get("height", 0)
+            # Ensure height is an integer
+            if isinstance(height, str):
+                # Check if this looks like a block hash (64 hex chars)
+                if len(height) == 64 and all(c in '0123456789abcdefABCDEF' for c in height):
+                    logging.error(f"Block hash '{height}' found in height field for block {block.get('block_hash', 'unknown')}")
+                    logging.error(f"Full block data: {block}")
+                    return 0
+                try:
+                    return int(height)
+                except ValueError:
+                    logging.warning(f"Invalid height value '{height}' in block {block.get('block_hash', 'unknown')}")
+                    return 0
+            return int(height) if height is not None else 0
+        
+        blocks = sorted(raw_blocks, key=get_height)
         logging.info("Received %d blocks", len(blocks))
     except Exception as e:
         logging.error(f"Error in process_blocks_from_peer setup: {e}", exc_info=True)
@@ -221,11 +240,17 @@ def _process_block_in_chain(block: dict):
 
   
             for out in outputs:
-                # Ensure amount is always stored as string to avoid scientific notation
-                if 'amount' in out:
-                    out['amount'] = str(out['amount'])
+                # Create proper UTXO record with all necessary fields
+                utxo_record = {
+                    "txid": txid,
+                    "utxo_index": out.get('utxo_index', 0),
+                    "sender": out.get('sender', ''),
+                    "receiver": out.get('receiver', ''),
+                    "amount": str(out.get('amount', '0')),  # Ensure string to avoid scientific notation
+                    "spent": False  # New UTXOs are always unspent
+                }
                 out_key = f"utxo:{txid}:{out.get('utxo_index', 0)}".encode()
-                batch.put(out_key, json.dumps(out).encode())
+                batch.put(out_key, json.dumps(utxo_record).encode())
 
     calculated_root = calculate_merkle_root(tx_ids)
     if calculated_root != block_merkle_root:
@@ -256,16 +281,49 @@ def _process_block_in_chain(block: dict):
     # Remove transactions from mempool (pending_transactions)
     # Skip the first tx_id as it's the coinbase transaction
     removed_count = 0
+    confirmed_from_mempool = []
     for txid in tx_ids[1:]:  # Skip coinbase (first transaction)
         if txid in pending_transactions:
             logging.info(f"[SYNC] Removing transaction {txid} from mempool")
             pending_transactions.pop(txid, None)
             removed_count += 1
+            confirmed_from_mempool.append(txid)
         else:
             logging.debug(f"[SYNC] Transaction {txid} not in mempool (might be from another node)")
     
     if removed_count > 0:
         logging.info(f"[SYNC] Removed {removed_count} transactions from mempool after block {block_hash}")
+    
+    # Emit confirmation events for transactions that were in mempool
+    for txid in confirmed_from_mempool:
+        # Get transaction data
+        tx_key = f"tx:{txid}".encode()
+        if tx_key in db:
+            tx_data = json.loads(db.get(tx_key).decode())
+            # Extract transaction details for the event
+            sender = None
+            receiver = None
+            for output in tx_data.get("outputs", []):
+                if output.get("sender"):
+                    sender = output["sender"]
+                if output.get("receiver"):
+                    receiver = output["receiver"]
+            
+            # Emit transaction confirmed event
+            asyncio.create_task(event_bus.emit(EventTypes.TRANSACTION_CONFIRMED, {
+                'txid': txid,
+                'transaction': {
+                    'id': txid,
+                    'hash': txid,
+                    'sender': sender,
+                    'receiver': receiver,
+                    'blockHeight': height,
+                },
+                'blockHeight': height,
+                'confirmed_from_mempool': True
+            }, source='sync'))
+            
+            logging.info(f"[SYNC] Emitted TRANSACTION_CONFIRMED event for {txid}")
     
     # Emit events for all database operations
     # Emit transaction events
