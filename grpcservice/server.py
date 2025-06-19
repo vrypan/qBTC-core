@@ -28,14 +28,14 @@ class NodeServiceServicer(rpc_pb2_grpc.NodeServiceServicer):
         return request_response_pb2.MempoolSizeMessage(size=mempool.len())
 
 
-def grpc_serve():
+def grpc_serve(port: int):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     rpc_pb2_grpc.add_NodeServiceServicer_to_server(NodeServiceServicer(), server)
-    server.add_insecure_port("[::]:50051")
+    server.add_insecure_port("[::]:"+str(port))
     server.start()
-    print("[#] gRPC server running on port 50051...")
+    print(f"[#] gRPC server running on port {port}...")
     server.wait_for_termination()
 
 
 if __name__ == "__main__":
-    grpc_serve()
+    grpc_serve(9999)

@@ -1,0 +1,16 @@
+grpcurl \
+  --plaintext 
+  -proto protobuf/rpc.proto \
+  -import-path ./protobuf \
+  -d '{}' \
+  127.0.0.1:11000 NodeService/GetMempool
+
+grpcurl \
+  --plaintext 
+  -proto protobuf/rpc.proto \
+  -import-path ./protobuf \
+  -d '{}' \
+  127.0.0.1:11000 NodeService/GetMempoolSize
+
+
+

@@ -30,7 +30,12 @@ logging.getLogger("kademlia").setLevel(logging.WARNING)
 
 
 class GossipNode:
-    def __init__(self, host: tuple[str, int], bootstrap: tuple[str, int] | None = None, is_full_node: bool = True):
+    def __init__(self,
+        host: tuple[str, int],
+        bootstrap: tuple[str, int] | None = None,
+        is_full_node: bool = True,
+        grpc_port: int = 0
+    ):
         """
         Initialize a GossipNode instance.
 
@@ -50,7 +55,7 @@ class GossipNode:
         self._dht_node = KademliaNode(
             host=(self._address[0],self._address[1] + 1000),
             bootstrap=bootstrap,
-            properties={"gossip_port": self._address[1]}
+            properties={"gossip_port": self._address[1], "grpc_port":grpc_port}
         )
 
     async def gossip_block(self, block: Block):
