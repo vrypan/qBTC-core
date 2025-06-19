@@ -20,7 +20,7 @@ from .dht import KademliaNode
 from blockchain.mempool import mempool
 from blockchain.utils import calculate_tx_hash
 from database import database2 as db
-from .utils import random_transaction
+from .utils import random_transaction, get_remote_mempool
 
 BUF_SIZE = 65536
 
@@ -119,7 +119,11 @@ class GossipNode:
                 message_type_str = GossipMessageType.Name(message.type)
                 if message.type == GossipMessageType.STATUS:
                     print(f"[>] {message_type_str} from {addr}: mempool_size={message.status_data.mempool_size}, tip={message.status_data.tip_hash.hex()}")
-                    # Add logic here to handle status message
+                    if message.status_data.mempool_size> mempool.len():
+                        for tx in get_remote_mempool((addr[0], addr[1])):
+                            tx_hash = calculate_tx_hash(tx)
+                            mempool.add(tx)
+                            print(f"   [>] importing tx={tx_hash.hex()} from {addr[0]}")
                 if message.type == GossipMessageType.BLOCK:
                     print(f"[>] {self._address} Block from {addr}: hash={message.block.hash.hex()}")
                     if db.block_exists(message.block.hash):

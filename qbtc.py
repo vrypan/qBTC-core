@@ -51,11 +51,11 @@ async def main():
         host=(args.host, args.port),
         bootstrap=bootstrap_address,
         full_node=args.broadcast,
-        grpc_port=args.port+2000,
+        grpc_port=args.port,
     ))
 
     # Start gRPC and API in threads
-    grpc_thread = threading.Thread(target=start_grpc_server, args=(args.port+2000,), name="gRPC", daemon=True)
+    grpc_thread = threading.Thread(target=start_grpc_server, args=(args.port,), name="gRPC", daemon=True)
     # api_thread = threading.Thread(target=start_json_api, name="FastAPI", daemon=True)
 
     grpc_thread.start()

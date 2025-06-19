@@ -13,6 +13,7 @@ message GossipMessage {
         GossipTransactionData transaction_data = 3;
         GossipStatusData status_data = 4;
     }
+    uint16 grpc_port = 3;
 };
 
 message GossipStatusData {

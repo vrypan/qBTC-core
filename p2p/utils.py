@@ -5,6 +5,9 @@ from protobuf.blockchain_pb2 import (
     Transaction, TxInput, TxOutput,
     Block, BlockHeader
 )
+from protobuf.rpc_pb2_grpc import NodeServiceStub
+from protobuf.request_response_pb2 import Empty
+import grpc
 
 def random_transaction() -> Transaction:
     """
@@ -58,3 +61,11 @@ def random_block(height: int) -> Block:
         blk.tx.append(random_transaction())
 
     return blk
+
+def get_remote_mempool(host: tuple[str, int]):
+    channel = grpc.insecure_channel(f"{host[0]}:{host[1]}")
+    grpc.channel_ready_future(channel).result(timeout=10)
+    stub = NodeServiceStub(channel)
+    for tx in stub.GetMempool(Empty()):
+        yield tx
+    channel.close()
