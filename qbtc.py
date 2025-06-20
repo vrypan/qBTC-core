@@ -20,9 +20,8 @@ async def start_gossip_node(
     host: tuple[str, int],
     bootstrap: tuple[str, int] | None = None,
     full_node: bool = False,
-    grpc_port: int = 0,
 ):
-    node = GossipNode(host=host, bootstrap=bootstrap, is_full_node=full_node, grpc_port=grpc_port)
+    node = GossipNode(host=host, bootstrap=bootstrap, is_full_node=full_node)
     await node.run()
 
 # --- Blocking gRPC in Thread ---
@@ -36,6 +35,10 @@ def start_json_api():
 
 # --- Async Main Orchestration ---
 async def main():
+    # Gossip and gRPC use the same port, but gossip is
+    # udp, while gRPC is tcp.
+    # GossipNode will also start a Kademlia DHT node on port+1000
+    #
     args = parse_args()
     bootstrap_address: tuple[str, int] | None = None
     if args.bootstrap:
@@ -51,7 +54,6 @@ async def main():
         host=(args.host, args.port),
         bootstrap=bootstrap_address,
         full_node=args.broadcast,
-        grpc_port=args.port,
     ))
 
     # Start gRPC and API in threads

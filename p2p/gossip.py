@@ -13,15 +13,19 @@ import socket
 import json
 import logging
 import random
+import sys
 
-from protobuf.blockchain_pb2 import Block, Transaction
 from protobuf.gossip_pb2 import GossipMessage, GossipMessageType, GossipStatusData, GossipTransactionData
+from protobuf.blockchain_pb2 import Block
 from .dht import KademliaNode
 from blockchain.mempool import mempool
-from blockchain.utils import calculate_tx_hash
+from blockchain.utils import calculate_tx_hash, address_from_script_pubkey
 from database import database2 as db
-from .utils import random_transaction, get_remote_mempool
+from .utils import get_remote_mempool
+from .testlibs import random_transaction
 
+# This is the gossip UDP buffer size. We have to check if 65k is
+# a good size, given the size of keys used here.
 BUF_SIZE = 65536
 
 # Configure logging
@@ -33,8 +37,7 @@ class GossipNode:
     def __init__(self,
         host: tuple[str, int],
         bootstrap: tuple[str, int] | None = None,
-        is_full_node: bool = True,
-        grpc_port: int = 0
+        is_full_node: bool = True
     ):
         """
         Initialize a GossipNode instance.
@@ -55,7 +58,7 @@ class GossipNode:
         self._dht_node = KademliaNode(
             host=(self._address[0],self._address[1] + 1000),
             bootstrap=bootstrap,
-            properties={"gossip_port": self._address[1], "grpc_port":grpc_port}
+            properties={"gossip_port": self._address[1]}
         )
 
     async def gossip_block(self, block: Block):
@@ -122,8 +125,14 @@ class GossipNode:
                     if message.status_data.mempool_size> mempool.len():
                         for tx in get_remote_mempool((addr[0], addr[1])):
                             tx_hash = calculate_tx_hash(tx)
-                            mempool.add(tx)
-                            print(f"   [>] importing tx={tx_hash.hex()} from {addr[0]}")
+                            for input in tx.inputs:
+                                # Check if this is a valid transaction
+                                if address_from_script_pubkey(input.script_sig, True) != b'':
+                                    mempool.add(tx)
+                                    print(f"   [>] importing tx={tx_hash.hex()} from {addr[0]}")
+                                else:
+                                    print(f"   [!] invalid tx={tx_hash.hex()} from {addr[0]}, skipping")
+                                    # TODO: add addr to a blacklist for a period of X hours
                 if message.type == GossipMessageType.BLOCK:
                     print(f"[>] {self._address} Block from {addr}: hash={message.block.hash.hex()}")
                     if db.block_exists(message.block.hash):
@@ -133,13 +142,18 @@ class GossipNode:
                 if message.type == GossipMessageType.TRANSACTION:
                     tx_hash = calculate_tx_hash(message.transaction_data.transaction)
                     print(f"[>] {message_type_str} from {addr[0]}:{addr[1]}: hash={tx_hash.hex()}")
-                    if mempool.hash_exists(tx_hash):
-                        print(f"[#] Transaction {tx_hash.hex()} already in mempool")
-                    else:
-                        mempool.add(message.transaction_data.transaction)
-                        print(f"[✓] Added transaction {tx_hash.hex()} to mempool")
-                        # Propagate the transaction to other peers
-                        asyncio.create_task(self.gossip_message(message, exclude_peers=(f"{addr[0]}:{addr[1]}",)))
+                    for input in message.transaction_data.transaction.inputs:
+                        # Check if this is a valid transaction
+                        if address_from_script_pubkey(input.script_sig, True) != b'':
+                            if mempool.hash_exists(tx_hash):
+                                print(f"[#] Transaction {tx_hash.hex()} already in mempool")
+                            else:
+                                mempool.add(message.transaction_data.transaction)
+                                print(f"[✓] Added transaction {tx_hash.hex()} to mempool")
+                                # Propagate the transaction to other peers
+                                asyncio.create_task(self.gossip_message(message, exclude_peers=(f"{addr[0]}:{addr[1]}",)))
+                        else:
+                            print(f"[!] Invalid transaction {tx_hash.hex()} skipping")
             except Exception as e:
                 print(f"[!] Failed to parse message from {addr}: {e}")
 
@@ -151,6 +165,11 @@ class GossipNode:
         while True:
             # block = random_block(height=10)
             transaction = random_transaction()
+            for input in transaction.inputs:
+                if address_from_script_pubkey(input.script_sig, True) == b'':
+                    print("INVALID TX INPUT")
+                    print(input.script_sig.hex())
+                    sys.exit(1)
             message = GossipMessage(
                 type=GossipMessageType.TRANSACTION,
                 transaction_data=GossipTransactionData(
