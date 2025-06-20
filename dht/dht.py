@@ -1,6 +1,5 @@
 import asyncio
 import json
-import logging
 import time
 import aiohttp
 from kademlia.network import Server as KademliaServer
@@ -8,6 +7,9 @@ from config.config import  shutdown_event, VALIDATOR_ID, HEARTBEAT_INTERVAL, VAL
 from state.state import validator_keys, known_validators
 from database.database import get_db,get_current_height
 from sync.sync import process_blocks_from_peer
+from log_utils import get_logger
+
+logger = get_logger(__name__)
 
 # Import NAT traversal
 try:
@@ -49,9 +51,9 @@ async def run_kad_server(port, bootstrap_addr=None, wallet=None, gossip_node=Non
                     import socket
                     ip = socket.gethostbyname(addr[0])
                     resolved_bootstrap.append((ip, addr[1]))
-                    logging.info(f"Resolved {addr[0]} to {ip}")
+                    logger.info(f"Resolved {addr[0]} to {ip}")
                 except Exception as e:
-                    logging.error(f"Failed to resolve {addr[0]}: {e}")
+                    logger.error(f"Failed to resolve {addr[0]}: {e}")
                     # In Docker, try using the hostname directly
                     resolved_bootstrap.append(addr)
             else:
@@ -61,17 +63,17 @@ async def run_kad_server(port, bootstrap_addr=None, wallet=None, gossip_node=Non
         bootstrap_addr = [addr for addr in resolved_bootstrap if addr[1] != port]
         if bootstrap_addr:
             await kad_server.bootstrap(bootstrap_addr)
-            logging.info(f"Bootstrapped to {bootstrap_addr}")
+            logger.info(f"Bootstrapped to {bootstrap_addr}")
             
             # Verify bootstrap success
             await asyncio.sleep(2)
             neighbors = kad_server.bootstrappable_neighbors()
             if not neighbors:
-                logging.warning("Bootstrap may have failed - no neighbors found")
+                logger.warning("Bootstrap may have failed - no neighbors found")
             else:
-                logging.info(f"Bootstrap successful - {len(neighbors)} neighbors found")
+                logger.info(f"Bootstrap successful - {len(neighbors)} neighbors found")
     
-    logging.info(f"Validator {VALIDATOR_ID} running DHT on port {port}")
+    logger.info(f"Validator {VALIDATOR_ID} running DHT on port {port}")
     
     # Wait a bit more before registering to ensure DHT is ready
     await asyncio.sleep(2)
@@ -80,9 +82,32 @@ async def run_kad_server(port, bootstrap_addr=None, wallet=None, gossip_node=Non
     if wallet and gossip_node and ip_address:
         # Use the provided IP address and gossip port instead of defaults
         actual_gossip_port = gossip_port if gossip_port else DEFAULT_GOSSIP_PORT
-        await announce_gossip_port(wallet, ip=ip_address, port=actual_gossip_port, gossip_node=gossip_node)
-        #if bootstrap_addr:  # Only discover peers if not bootstrap
-        #    await discover_peers_once(gossip_node)
+        is_bootstrap = bootstrap_addr is None
+        await announce_gossip_port(wallet, ip=ip_address, port=actual_gossip_port, gossip_node=gossip_node, is_bootstrap=is_bootstrap)
+        
+        # All nodes should discover peers
+        await discover_peers_once(gossip_node)
+        
+        if not is_bootstrap:
+            # Regular nodes: periodic peer discovery
+            asyncio.create_task(periodic_peer_discovery(gossip_node))
+        else:
+            # Bootstrap nodes: both peer discovery and maintenance
+            asyncio.create_task(periodic_peer_discovery(gossip_node))
+            asyncio.create_task(bootstrap_maintenance(gossip_node, wallet, ip_address, actual_gossip_port))
+    
+    # Keep DHT server running continuously
+    logger.info("DHT server is running and will continue serving...")
+    try:
+        while not shutdown_event.is_set():
+            await asyncio.sleep(30)  # Check every 30 seconds
+            # Optionally log DHT status
+            neighbors = kad_server.bootstrappable_neighbors()
+            logger.debug(f"DHT status: {len(neighbors)} neighbors")
+    except asyncio.CancelledError:
+        logger.info("DHT server shutting down...")
+        raise
+    
     return kad_server
 
 async def register_validator_once():
@@ -95,24 +120,24 @@ async def register_validator_once():
             if VALIDATOR_ID not in existing:
                 existing.add(VALIDATOR_ID)
                 await kad_server.set(VALIDATORS_LIST_KEY, json.dumps(list(existing)))
-                logging.info(f"Validator joined: {VALIDATOR_ID}")
+                logger.info(f"Validator joined: {VALIDATOR_ID}")
             else:
-                logging.info(f"Validator {VALIDATOR_ID} already registered")
+                logger.info(f"Validator {VALIDATOR_ID} already registered")
             
             known_validators.clear()
             known_validators.update(existing)
             return  # Success
             
         except Exception as e:
-            logging.error(f"Registration attempt {attempt + 1} failed: {e}")
+            logger.error(f"Registration attempt {attempt + 1} failed: {e}")
             if attempt < max_retries - 1:
                 await asyncio.sleep(2 ** attempt)  # Exponential backoff
             else:
-                logging.error(f"Failed to register validator after {max_retries} attempts")
+                logger.error(f"Failed to register validator after {max_retries} attempts")
 
 async def announce_gossip_port(wallet, ip="127.0.0.1", port=None, gossip_node=None, is_bootstrap=False):
     if not kad_server:
-        logging.error("Cannot announce gossip port: kad_server not initialized")
+        logger.error("Cannot announce gossip port: kad_server not initialized")
         return
     
     if port is None:
@@ -142,16 +167,16 @@ async def announce_gossip_port(wallet, ip="127.0.0.1", port=None, gossip_node=No
             external_ip = nat_traversal.external_ip
             external_port = upnp_port
             nat_type = "upnp"
-            logging.info(f"UPnP mapping successful: {ip}:{port} -> {external_ip}:{external_port}")
+            logger.info(f"UPnP mapping successful: {ip}:{port} -> {external_ip}:{external_port}")
         elif SimpleSTUN:
             # Try STUN as fallback
             stun_result = await SimpleSTUN.get_external_address(port)
             if stun_result:
                 external_ip, external_port = stun_result
                 nat_type = "stun"
-                logging.info(f"STUN discovery successful: {external_ip}:{external_port}")
+                logger.info(f"STUN discovery successful: {external_ip}:{external_port}")
     elif is_private:
-        logging.info(f"Using private network address {ip}:{port} - NAT traversal not needed")
+        logger.info(f"Using private network address {ip}:{port} - NAT traversal not needed")
     
     key = f"gossip_{VALIDATOR_ID}"
     # Enhanced info with NAT details
@@ -167,36 +192,77 @@ async def announce_gossip_port(wallet, ip="127.0.0.1", port=None, gossip_node=No
     
     for attempt in range(5):
         try:
-            logging.info(f"Attempting to announce gossip port (attempt {attempt+1}/5): {key} -> {info}")
+            logger.info(f"Attempting to announce gossip port (attempt {attempt+1}/5): {key} -> {info}")
             await kad_server.set(key, json.dumps(info))
             stored_value = await kad_server.get(key)
             if stored_value:
                 stored_info = json.loads(stored_value)
                 # Check if essential fields match
                 if stored_info.get("ip") == info["ip"] and stored_info.get("port") == info["port"]:
-                    logging.info(f"Successfully announced gossip info with NAT type '{nat_type}': {key} -> {info}")
-                    if gossip_node and is_bootstrap:
-                        gossip_node.add_peer(external_ip, external_port)
+                    logger.info(f"Successfully announced gossip info with NAT type '{nat_type}': {key} -> {info}")
+                    # Bootstrap nodes should not add themselves as peers
                     return
                 else:
-                    logging.warning(f"Stored info doesn't match: expected {info}, got {stored_info}")
+                    logger.warning(f"Stored info doesn't match: expected {info}, got {stored_info}")
             else:
-                logging.warning(f"Failed to retrieve stored value for {key}")
+                logger.warning(f"Failed to retrieve stored value for {key}")
         except Exception as e:
-            logging.error(f"Error during gossip announcement: {e}")
+            logger.error(f"Error during gossip announcement: {e}")
         await asyncio.sleep(2)
-    logging.error("Failed to announce gossip port after 5 attempts")
+    logger.error("Failed to announce gossip port after 5 attempts")
+
+async def bootstrap_maintenance(gossip_node, wallet, ip_address, port):
+    """Maintenance tasks for bootstrap nodes"""
+    while not shutdown_event.is_set():
+        try:
+            # Re-announce our presence periodically
+            neighbors = kad_server.bootstrappable_neighbors() if kad_server else []
+            logger.info(f"Bootstrap node maintenance: {len(neighbors)} neighbors")
+            
+            # Try to re-announce even without neighbors (for new nodes to find us)
+            if kad_server:
+                # Re-announce validator list
+                await register_validator_once()
+                # Re-announce gossip info
+                await announce_gossip_port(wallet, ip=ip_address, port=port, gossip_node=gossip_node, is_bootstrap=True)
+                
+        except Exception as e:
+            logger.error(f"Error in bootstrap maintenance: {e}")
+        await asyncio.sleep(60)  # Check every minute
+
+async def periodic_peer_discovery(gossip_node):
+    """Periodically discover new peers from DHT"""
+    while not shutdown_event.is_set():
+        try:
+            await discover_peers_once(gossip_node)
+            # Also re-announce our gossip info periodically
+            if kad_server:
+                neighbors = kad_server.bootstrappable_neighbors()
+                if len(neighbors) > 0:
+                    # We have neighbors, try to re-announce
+                    logger.debug(f"Re-announcing to {len(neighbors)} neighbors")
+        except Exception as e:
+            logger.error(f"Error in periodic peer discovery: {e}")
+        await asyncio.sleep(30)  # Check every 30 seconds
 
 async def discover_peers_once(gossip_node):
-    validators_json = await kad_server.get(VALIDATORS_LIST_KEY)
-    validator_ids = json.loads(validators_json) if validators_json else []
-    logging.info(f"Discovered validators: {validator_ids}")
+    try:
+        validators_json = await kad_server.get(VALIDATORS_LIST_KEY)
+        validator_ids = json.loads(validators_json) if validators_json else []
+        logger.info(f"Discovered validators: {validator_ids}")
+    except Exception as e:
+        logger.error(f"Failed to get validator list: {e}")
+        return
+        
     for vid in validator_ids:
         if vid == VALIDATOR_ID:
             continue
         gossip_key = f"gossip_{vid}"
-        gossip_info_json = await kad_server.get(gossip_key)
-        if gossip_info_json:
+        try:
+            gossip_info_json = await kad_server.get(gossip_key)
+            if not gossip_info_json:
+                continue
+                
             info = json.loads(gossip_info_json)
             
             # Handle both old format (just ip/port) and new NAT-aware format
@@ -205,19 +271,27 @@ async def discover_peers_once(gossip_node):
                 port = info.get("port", info.get("external_port"))
                 
                 # Skip if it's our own external IP
-                if ip == own_ip or ip == nat_traversal.external_ip if nat_traversal else False:
-                    continue
+                try:
+                    if ip == own_ip or (nat_traversal and hasattr(nat_traversal, 'external_ip') and ip == nat_traversal.external_ip):
+                        continue
+                except:
+                    pass
                     
                 # Store full peer info for NAT traversal
                 gossip_node.add_peer(ip, port, peer_info=info)
                 
                 nat_type = info.get("nat_type", "unknown")
-                logging.info(f"Connected to peer {vid} at {ip}:{port} (NAT type: {nat_type})")
+                logger.info(f"Connected to peer {vid} at {ip}:{port} (NAT type: {nat_type})")
+                
+                # Also store publicKey in validator_keys for TX signature validation
+                if "publicKey" in info:
+                    validator_keys[vid] = info["publicKey"]
+                    logger.info(f"Added validator publicKey for {vid}")
             else:
                 # Old format compatibility
-                logging.warning(f"Old peer info format for {vid}: {info}")
-        else:
-            logging.warning(f"No gossip info found for validator {vid}")
+                logger.warning(f"Old peer info format for {vid}: {info}")
+        except Exception as e:
+            logger.error(f"Error processing peer {vid}: {e}")
 
 
 async def push_blocks(peer_ip, peer_port):
@@ -255,7 +329,7 @@ async def push_blocks(peer_ip, peer_port):
             print(msg)
             peer_height = msg.get("height")
             #peer_tip = msg.get("current_tip")
-            logging.info(f"*** Peer {peer_ip} responded with height {peer_height}")
+            logger.info(f"*** Peer {peer_ip} responded with height {peer_height}")
 
         # Only push if our height is greater
         if int(peer_height) < local_height:
@@ -344,7 +418,7 @@ async def push_blocks(peer_ip, peer_port):
                 total_chunks = header.get("total_chunks", 0)
                 blocks = []
                 
-                logging.info(f"Receiving chunked response with {total_chunks} chunks")
+                logger.info(f"Receiving chunked response with {total_chunks} chunks")
                 
                 for chunk_num in range(total_chunks):
                     chunk_line = await r.readline()
@@ -357,7 +431,7 @@ async def push_blocks(peer_ip, peer_port):
                             raise ValueError(f"Expected chunk {chunk_num}, got {chunk_data.get('chunk_num')}")
                         
                         blocks.extend(chunk_data.get("blocks", []))
-                        logging.info(f"Received chunk {chunk_num + 1}/{total_chunks} with {len(chunk_data.get('blocks', []))} blocks")
+                        logger.info(f"Received chunk {chunk_num + 1}/{total_chunks} with {len(chunk_data.get('blocks', []))} blocks")
                         
                     except json.JSONDecodeError as e:
                         raise ValueError(f"Bad JSON in chunk {chunk_num}: {e}")
@@ -368,7 +442,7 @@ async def push_blocks(peer_ip, peer_port):
                 response = header
 
             blocks = sorted(response.get("blocks", []), key=lambda x: x["height"])
-            logging.info(f"Received {len(blocks)} blocks from from peer")
+            logger.info(f"Received {len(blocks)} blocks from from peer")
             process_blocks_from_peer(blocks)
 
         else:
@@ -391,7 +465,7 @@ async def discover_peers_periodically(gossip_node, local_ip=None):
             validators_json = await kad_server.get(VALIDATORS_LIST_KEY)
             validator_ids = json.loads(validators_json) if validators_json else []
             print("*** in discover peers periodically")
-            logging.info(f"Discovered {len(validator_ids)} validators in DHT")
+            logger.info(f"Discovered {len(validator_ids)} validators in DHT")
             
             for vid in validator_ids:
                 if vid == VALIDATOR_ID:
@@ -416,15 +490,15 @@ async def discover_peers_periodically(gossip_node, local_ip=None):
                     gossip_node.add_peer(ip, port, peer_info=info)
                     
                     if peer not in known_peers:
-                        logging.info(f"Connected to peer {vid} at {peer}")
+                        logger.info(f"Connected to peer {vid} at {peer}")
                         known_peers.add(peer)
                     else:
                         # Peer already known, but add_peer will reset failure count if needed
-                        logging.debug(f"Re-checking peer {vid} at {peer}")
+                        logger.debug(f"Re-checking peer {vid} at {peer}")
                 else:
-                    logging.warning(f"No gossip info found for validator {vid}")
+                    logger.warning(f"No gossip info found for validator {vid}")
         except Exception as e:
-            logging.error(f"Error in discover_peers_periodically: {e}")
+            logger.error(f"Error in discover_peers_periodically: {e}")
         await asyncio.sleep(5)
 
 async def update_heartbeat():
@@ -433,9 +507,9 @@ async def update_heartbeat():
         try:
             # Always try to update heartbeat, not just when bootstrapped
             await kad_server.set(heartbeat_key, str(time.time()))
-            logging.debug(f"Updated heartbeat for {VALIDATOR_ID}")
+            logger.debug(f"Updated heartbeat for {VALIDATOR_ID}")
         except Exception as e:
-            logging.warning(f"Failed to update heartbeat: {e}")
+            logger.warning(f"Failed to update heartbeat: {e}")
         await asyncio.sleep(HEARTBEAT_INTERVAL)
 
 async def maintain_validator_list(gossip_node):
@@ -444,7 +518,7 @@ async def maintain_validator_list(gossip_node):
             dht_list_json = await kad_server.get(VALIDATORS_LIST_KEY)
             dht_set = set(json.loads(dht_list_json)) if dht_list_json else set()
         except Exception as e:
-            logging.error(f"Failed to fetch validator list from DHT: {e}")
+            logger.error(f"Failed to fetch validator list from DHT: {e}")
             dht_set = set()
 
         current_time = time.time()
@@ -459,7 +533,7 @@ async def maintain_validator_list(gossip_node):
                 if last_seen and (current_time - last_seen) <= VALIDATOR_TIMEOUT:
                     alive.add(v)
             except Exception as e:
-                logging.warning(f"Failed to fetch heartbeat for {v}: {e}")
+                logger.warning(f"Failed to fetch heartbeat for {v}: {e}")
 
         alive.add(VALIDATOR_ID)
 
@@ -467,7 +541,7 @@ async def maintain_validator_list(gossip_node):
             try:
                 await kad_server.set(VALIDATORS_LIST_KEY, json.dumps(list(alive)))
             except Exception as e:
-                logging.error(f"Failed to update validator list in DHT: {e}")
+                logger.error(f"Failed to update validator list in DHT: {e}")
 
         # Process newly joined validators
         newly_joined = alive - known_validators
@@ -488,9 +562,9 @@ async def maintain_validator_list(gossip_node):
                         #await push_blocks(ip, port)
                         if public_key:
                             validator_keys[v] = public_key
-                        logging.info(f"New validator joined: {v} at {ip}:{port}")
+                        logger.info(f"New validator joined: {v} at {ip}:{port}")
             except Exception as e:
-                logging.warning(f"Failed to process new validator {v}: {e}")
+                logger.warning(f"Failed to process new validator {v}: {e}")
 
         # Process validators that have left
         just_left = known_validators - alive
@@ -505,9 +579,9 @@ async def maintain_validator_list(gossip_node):
                     if ip and port:
                         gossip_node.remove_peer(ip, port)
                 validator_keys.pop(v, None)
-                logging.info(f"Validator left: {v}")
+                logger.info(f"Validator left: {v}")
             except Exception as e:
-                logging.warning(f"Failed to remove validator {v}: {e}")
+                logger.warning(f"Failed to remove validator {v}: {e}")
 
         # Update known validators
         known_validators.clear()

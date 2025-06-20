@@ -412,8 +412,26 @@ async def submit_block(request: Request, data: dict) -> dict:
     logger.info(f"Block submission request: {data}")
     
     try:
-        gossip_client = getattr(request.app.state, 'gossip_client', None)
-        logger.info(f"Retrieved gossip_client from app state: {gossip_client}")
+        # Get gossip node - try multiple sources
+        gossip_client = None
+        
+        # Try web module first
+        try:
+            from web.web import get_gossip_node
+            gossip_client = get_gossip_node()
+        except ImportError:
+            pass
+        
+        # If not found, try sys.modules
+        if not gossip_client:
+            import sys
+            gossip_client = getattr(sys.modules.get('__main__', None), 'gossip_node', None)
+        
+        # If still not found, try app.state as fallback
+        if not gossip_client:
+            gossip_client = getattr(request.app.state, 'gossip_client', None)
+            
+        logger.info(f"Retrieved gossip_client: {gossip_client}")
         
         # Validate block submission parameters
         if "params" not in data or not isinstance(data["params"], list) or len(data["params"]) == 0:
