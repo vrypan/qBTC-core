@@ -59,7 +59,7 @@ def main() -> None:
     parser.add_argument("--receiver", required=True, help="Destination BQS address")
     parser.add_argument("--amount", required=True, type=Decimal, help="Amount to send (in whole coins, decimals allowed)")
     parser.add_argument("--timestamp", help="Optional timestamp; defaults to unix‑ms timestamp")
-    parser.add_argument("--chain_id", default="5", help="Chain ID for the network (default: 5)")
+    parser.add_argument("--chain_id", default="1", help="Chain ID for the network (default: 1)")
     parser.add_argument("--wallet", default="wallet.json", help="Wallet JSON file")
     parser.add_argument("--password", help="Wallet passphrase (if omitted you'll be prompted)")
     args = parser.parse_args()

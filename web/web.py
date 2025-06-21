@@ -7,7 +7,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Dict, Set, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from database.database import get_db, get_current_height
 from wallet.wallet import verify_transaction
@@ -111,6 +111,33 @@ class WorkerResponse(BaseModel):
     tx_id: Optional[str] = None
     address: Optional[str] = None
     secret: Optional[str] = None
+
+async def require_localhost(request: Request):
+    """Dependency to ensure request is from localhost"""
+    client_host = request.client.host
+    allowed_hosts = ["127.0.0.1", "localhost", "::1"]  # IPv4 and IPv6 localhost
+    
+    # Also allow Docker host IPs and private network ranges for development
+    # In production, remove these or make them configurable
+    docker_hosts = ["192.168.65.1", "172.17.0.1", "host.docker.internal"]
+    private_prefixes = ["192.168.", "10.", "172."]
+    
+    if client_host in allowed_hosts:
+        return True
+    
+    if client_host in docker_hosts:
+        return True
+        
+    # Check if it's a private network IP (for Docker)
+    for prefix in private_prefixes:
+        if client_host.startswith(prefix):
+            logger.debug(f"Allowing debug access from private network IP: {client_host}")
+            return True
+    
+    logger.warning(f"Attempted access to debug endpoint from non-localhost IP: {client_host}")
+    raise HTTPException(status_code=403, detail="Debug endpoints are only accessible from localhost or private networks")
+    
+    return True
 
 class WebSocketManager:
     def __init__(self):
@@ -595,7 +622,7 @@ async def get_transactions_endpoint(wallet_address: str, limit: int = 50):
         raise HTTPException(status_code=500, detail="Error retrieving transactions")
 
 @app.get("/debug/utxos")
-async def debug_utxos():
+async def debug_utxos(localhost_only: bool = Depends(require_localhost)):
     """Debug endpoint to show all UTXOs in the database"""
     try:
         db = get_db()
@@ -624,7 +651,7 @@ async def debug_utxos():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/debug/genesis")
-async def debug_genesis():
+async def debug_genesis(localhost_only: bool = Depends(require_localhost)):
     """Debug endpoint to find genesis transactions"""
     try:
         db = get_db()
@@ -712,7 +739,7 @@ async def health_check(request: Request):
         )
 
 @app.get("/debug/mempool")
-async def debug_mempool():
+async def debug_mempool(localhost_only: bool = Depends(require_localhost)):
     """Debug endpoint to check mempool status"""
     try:
         return {
@@ -725,7 +752,7 @@ async def debug_mempool():
         raise HTTPException(status_code=500, detail="Error retrieving mempool")
 
 @app.get("/debug/network")
-async def debug_network():
+async def debug_network(localhost_only: bool = Depends(require_localhost)):
     """Debug endpoint to check network status"""
     import sys
     from config.config import VALIDATOR_ID
@@ -772,7 +799,7 @@ async def debug_network():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/debug/peers")
-async def debug_peers():
+async def debug_peers(localhost_only: bool = Depends(require_localhost)):
     """Debug endpoint to see detailed peer information"""
     import sys
     try:
