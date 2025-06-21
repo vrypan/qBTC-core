@@ -111,21 +111,39 @@ async def run_kad_server(port, bootstrap_addr=None, wallet=None, gossip_node=Non
     return kad_server
 
 async def register_validator_once():
+    """Register validator using individual keys to avoid race conditions"""
     max_retries = 5
     for attempt in range(max_retries):
         try:
-            existing_json = b2s(await kad_server.get(VALIDATORS_LIST_KEY))
-            existing = set(json.loads(existing_json)) if existing_json else set()
+            # Register this validator with a unique key
+            validator_key = f"validator_{VALIDATOR_ID}"
+            validator_info = {
+                "id": VALIDATOR_ID,
+                "joined_at": int(time.time()),
+                "active": True,
+                "known_peers": list(known_validators)  # Share what we know
+            }
             
-            if VALIDATOR_ID not in existing:
-                existing.add(VALIDATOR_ID)
-                await kad_server.set(VALIDATORS_LIST_KEY, json.dumps(list(existing)))
-                logger.info(f"Validator joined: {VALIDATOR_ID}")
-            else:
-                logger.info(f"Validator {VALIDATOR_ID} already registered")
+            await kad_server.set(validator_key, json.dumps(validator_info))
+            logger.info(f"Validator registered: {VALIDATOR_ID}")
             
-            known_validators.clear()
-            known_validators.update(existing)
+            # Also update the shared list with all validators we know about
+            all_validators = known_validators.copy()
+            all_validators.add(VALIDATOR_ID)
+            
+            try:
+                # Get current list and merge with our knowledge
+                existing_json = b2s(await kad_server.get(VALIDATORS_LIST_KEY))
+                if existing_json:
+                    existing = set(json.loads(existing_json))
+                    all_validators.update(existing)
+                
+                # Write the merged list
+                await kad_server.set(VALIDATORS_LIST_KEY, json.dumps(sorted(list(all_validators))))
+                logger.info(f"Updated validator list with {len(all_validators)} validators")
+            except Exception as e:
+                logger.warning(f"Failed to update validator list (non-critical): {e}")
+            
             return  # Success
             
         except Exception as e:
@@ -232,9 +250,21 @@ async def bootstrap_maintenance(gossip_node, wallet, ip_address, port):
 
 async def periodic_peer_discovery(gossip_node):
     """Periodically discover new peers from DHT"""
+    last_validator_check = 0
     while not shutdown_event.is_set():
         try:
             await discover_peers_once(gossip_node)
+            
+            # Periodically re-register to share our peer knowledge
+            current_time = time.time()
+            if current_time - last_validator_check > 60:  # Every minute for faster convergence
+                last_validator_check = current_time
+                logger.info("Periodic validator list refresh and reconciliation")
+                await register_validator_once()
+                
+                # Force a rediscovery after registration to pick up any new peers
+                await discover_peers_once(gossip_node)
+            
             # Also re-announce our gossip info periodically
             if kad_server:
                 neighbors = kad_server.bootstrappable_neighbors()
@@ -246,21 +276,61 @@ async def periodic_peer_discovery(gossip_node):
         await asyncio.sleep(30)  # Check every 30 seconds
 
 async def discover_peers_once(gossip_node):
+    """Discover peers using a reconciliation approach"""
+    discovered_validators = set()
+    
+    # First, add ourselves to ensure we're always in the set
+    discovered_validators.add(VALIDATOR_ID)
+    
+    # Get the current validator list
     try:
         validators_json = await kad_server.get(VALIDATORS_LIST_KEY)
-        validator_ids = json.loads(validators_json) if validators_json else []
-        logger.info(f"Discovered validators: {validator_ids}")
+        if validators_json:
+            validator_ids = json.loads(validators_json)
+            discovered_validators.update(validator_ids)
     except Exception as e:
-        logger.error(f"Failed to get validator list: {e}")
-        return
-        
-    for vid in validator_ids:
+        logger.warning(f"Failed to get validator list: {e}")
+    
+    # Check each validator's individual registration
+    validators_to_check = list(discovered_validators)
+    for vid in validators_to_check:
+        if vid == VALIDATOR_ID:
+            continue
+        validator_key = f"validator_{vid}"
+        try:
+            validator_info = await kad_server.get(validator_key)
+            if validator_info:
+                info = json.loads(validator_info)
+                # Also check if they know about other validators
+                if "known_peers" in info:
+                    discovered_validators.update(info["known_peers"])
+        except:
+            pass
+    
+    # Reconcile the validator list if we found new ones
+    if len(discovered_validators) > len(known_validators):
+        logger.info(f"Found new validators, updating list: {discovered_validators}")
+        try:
+            await kad_server.set(VALIDATORS_LIST_KEY, json.dumps(sorted(list(discovered_validators))))
+        except Exception as e:
+            logger.warning(f"Failed to update validator list: {e}")
+    
+    # Update our known validators
+    known_validators.clear()
+    known_validators.update(discovered_validators)
+    logger.info(f"Total discovered validators: {list(discovered_validators)}")
+    
+    # Now discover gossip endpoints for each validator
+    discovered_count = 0
+    
+    for vid in discovered_validators:
         if vid == VALIDATOR_ID:
             continue
         gossip_key = f"gossip_{vid}"
         try:
             gossip_info_json = await kad_server.get(gossip_key)
             if not gossip_info_json:
+                logger.debug(f"No gossip info found for validator {vid}")
                 continue
                 
             info = json.loads(gossip_info_json)
@@ -279,6 +349,7 @@ async def discover_peers_once(gossip_node):
                     
                 # Store full peer info for NAT traversal
                 gossip_node.add_peer(ip, port, peer_info=info)
+                discovered_count += 1
                 
                 nat_type = info.get("nat_type", "unknown")
                 logger.info(f"Connected to peer {vid} at {ip}:{port} (NAT type: {nat_type})")
@@ -292,6 +363,8 @@ async def discover_peers_once(gossip_node):
                 logger.warning(f"Old peer info format for {vid}: {info}")
         except Exception as e:
             logger.error(f"Error processing peer {vid}: {e}")
+    
+    logger.info(f"Peer discovery complete: discovered {discovered_count}/{len(validator_ids)-1} peers")
 
 
 async def push_blocks(peer_ip, peer_port):

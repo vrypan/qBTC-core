@@ -165,6 +165,21 @@ class GossipNode:
         if msg_type == "transaction":
             self.tx_stats['received'] += 1
             
+            # Recalculate txid to ensure consistency
+            from blockchain.blockchain import serialize_transaction, sha256d
+            msg_copy = msg.copy()
+            if "txid" in msg_copy:
+                del msg_copy["txid"]
+            raw_tx = serialize_transaction(msg_copy)
+            calculated_txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex()
+            
+            # Verify txid matches
+            if txid and txid != calculated_txid:
+                logger.warning(f"[TX MISMATCH] Received txid {txid} but calculated {calculated_txid}")
+                txid = calculated_txid  # Use the calculated one for consistency
+            else:
+                txid = calculated_txid
+            
             # Check for duplicates BEFORE logger
             if txid in self.seen_tx:
                 # Transaction was already seen and processed
@@ -201,9 +216,11 @@ class GossipNode:
                 if txid in pending_transactions:
                     return
                 
-                # Ensure the message has txid
+                # Use the calculated txid for consistency
                 msg["txid"] = txid
                 
+                # Store just the transaction data, not the entire gossip message
+                # This ensures consistency with how transactions are stored from web API
                 pending_transactions[txid] = msg
                 logger.info(f"[MEMPOOL] Added gossiped transaction {txid} to mempool. Current size: {len(pending_transactions)}")
                 # Add to seen_tx BEFORE broadcasting to prevent loops
@@ -334,14 +351,33 @@ class GossipNode:
 
     async def randomized_broadcast(self, msg_dict):
         peers = self.dht_peers | self.client_peers 
+        
+        # For critical messages like transactions, try to discover new peers first
+        msg_type = msg_dict.get("type", "unknown")
+        if msg_type == "transaction" and len(peers) < 3:
+            logger.info(f"Only {len(peers)} peers known for transaction broadcast, checking for new peers...")
+            # Import here to avoid circular dependency
+            from dht.dht import discover_peers_once
+            try:
+                await discover_peers_once(self)
+                peers = self.dht_peers | self.client_peers
+                logger.info(f"After discovery, have {len(peers)} peers")
+            except Exception as e:
+                logger.warning(f"Failed to discover new peers: {e}")
+        
         if not peers:
             logger.warning("No peers available for broadcast")
             return
-        num_peers = max(2, int(len(peers) ** 0.5))
-        peers_to_send = random.sample(list(peers), min(len(peers), num_peers))
+            
+        # For transactions, broadcast to ALL peers, not just a subset
+        if msg_type == "transaction":
+            peers_to_send = list(peers)
+            logger.info(f"Broadcasting transaction to ALL {len(peers_to_send)} peers")
+        else:
+            num_peers = max(2, int(len(peers) ** 0.5))
+            peers_to_send = random.sample(list(peers), min(len(peers), num_peers))
         
         # Log broadcast details
-        msg_type = msg_dict.get("type", "unknown")
         logger.info(f"Broadcasting {msg_type} to {len(peers_to_send)} peers: {peers_to_send}")
         
         payload = (json.dumps(msg_dict) + "\n").encode('utf-8')

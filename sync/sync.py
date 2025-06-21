@@ -1,6 +1,6 @@
 from database.database import get_db, get_current_height
 from rocksdict import WriteBatch
-from blockchain.blockchain import Block, calculate_merkle_root, validate_pow
+from blockchain.blockchain import Block, calculate_merkle_root, validate_pow, serialize_transaction, sha256d
 from blockchain.chain_singleton import get_chain_manager
 from config.config import ADMIN_ADDRESS, GENESIS_ADDRESS, CHAIN_ID, TX_EXPIRATION_TIME
 from wallet.wallet import verify_transaction
@@ -328,9 +328,12 @@ def _process_block_in_chain(block: dict):
     # Fix 1: Validate coinbase amount after all fees are calculated
     if coinbase_data is not None:
         # Define block reward schedule
-        # For now, we'll use 0 block reward (only fees allowed)
-        # This can be updated to implement a proper reward schedule
-        block_subsidy = Decimal("0")
+        # Bitcoin-like halving schedule: 50 BTC initially, halving every 210,000 blocks
+        halvings = height // 210000
+        if halvings >= 64:
+            block_subsidy = Decimal("0")
+        else:
+            block_subsidy = Decimal("50") / (2 ** halvings) * Decimal("100000000")  # In satoshis
         
         # Maximum allowed coinbase output
         max_coinbase_amount = block_subsidy + total_fees

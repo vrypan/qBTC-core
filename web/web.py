@@ -937,8 +937,7 @@ async def worker_endpoint(request: Request):
         raw_tx = serialize_transaction(transaction)
         txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex() 
         transaction["txid"] = txid
-        for output in transaction["outputs"]:
-            output["txid"] = txid
+        # Don't add txid to outputs - this contaminates the transaction structure
         pending_transactions[txid] = transaction
         logger.info(f"[MEMPOOL] Added transaction {txid} to mempool. Current size: {len(pending_transactions)}")
         #db.put(b"tx:" + txid.encode(), json.dumps(transaction).encode())
