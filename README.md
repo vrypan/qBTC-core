@@ -71,7 +71,7 @@ The cryptographic layer is modular, allowing ML-DSA to be replaced with other po
 ### 1. Clone the Repository & Install Dependencies
 
 ```bash
-git clone https://github.com/bitcoinqs/qBTC-core.git
+git clone https://github.com/q-btc/qBTC-core.git
 cd qBTC-core
 pip install -r requirements.txt
 ```
@@ -403,4 +403,4 @@ PRs and issues welcome! To contribute:
 - [Bitcoin Whitepaper](https://bitcoin.org/bitcoin.pdf)
 - [ML-DSA Specification](https://csrc.nist.gov/pubs/fips/204/final)
 - [Kademlia Paper](https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia-lncs.pdf)
-- [qBTC Website](https://bitcoinqs.org)
+- [qBTC Website](https://qb.tc)
