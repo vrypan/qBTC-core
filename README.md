@@ -403,4 +403,4 @@ PRs and issues welcome! To contribute:
 - [Bitcoin Whitepaper](https://bitcoin.org/bitcoin.pdf)
 - [ML-DSA Specification](https://csrc.nist.gov/pubs/fips/204/final)
 - [Kademlia Paper](https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia-lncs.pdf)
-- [qBTC Website](https://bitcoinqs.org)
+- [qBTC Website](https://qb.tc)
