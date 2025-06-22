@@ -231,7 +231,10 @@ class ChainManager:
             logger.info(f"New best chain tip: {block_hash} at height {height}")
             
             # Connect the block to process its transactions and create UTXOs
-            self._connect_block(block_hash)
+            # Need to create a WriteBatch for the transaction
+            batch = WriteBatch()
+            self._connect_block(block_data, batch)
+            self.db.write(batch)
             
             # Process any orphans that can now be connected
             self._process_orphans_for_block(block_hash)
