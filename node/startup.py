@@ -86,18 +86,9 @@ async def startup(args=None):
             success, error = cm.add_block(genesis_block_data)
             if success:
                 logger.info("Genesis block created successfully")
-                # Manually create the genesis UTXO
-                utxo_key = f"utxo:{genesis_tx['txid']}:0".encode()
-                utxo_data = {
-                    "txid": genesis_tx["txid"],
-                    "utxo_index": 0,
-                    "sender": GENESIS_ADDRESS,
-                    "receiver": ADMIN_ADDRESS,
-                    "amount": "21000000",
-                    "spent": False
-                }
-                db.put(utxo_key, json.dumps(utxo_data).encode())
-                logger.info(f"Genesis UTXO created: 21M coins to {ADMIN_ADDRESS}")
+                # Don't manually create the genesis UTXO - ChainManager already does this
+                # when processing the genesis block transactions
+                logger.info(f"Genesis block added with 21M coins to {ADMIN_ADDRESS}")
             else:
                 logger.error(f"Failed to create genesis block: {error}")
         
