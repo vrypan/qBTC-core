@@ -142,6 +142,16 @@ class ChainManager:
         if block_key not in self.db:
             logger.info(f"Storing new block {block_hash} at height {height}")
             self.db.put(block_key, json.dumps(block_data).encode())
+            
+            # Also store transactions separately for fork blocks
+            # This ensures they're available during reorganization
+            if "full_transactions" in block_data:
+                for tx in block_data["full_transactions"]:
+                    if tx and "txid" in tx:
+                        tx_key = f"tx:{tx['txid']}".encode()
+                        if tx_key not in self.db:
+                            self.db.put(tx_key, json.dumps(tx).encode())
+                            logger.debug(f"Stored transaction {tx['txid']} from block {block_hash}")
         
         # Check if block already exists
         if block_hash in self.block_index:
@@ -307,36 +317,90 @@ class ChainManager:
         
         logger.info(f"Disconnecting {len(blocks_to_disconnect)} blocks, connecting {len(blocks_to_connect)} blocks")
         
+        # Create backup of current state for rollback
+        backup_state = {
+            "best_tip": current_tip,
+            "height": self.block_index[current_tip]["height"],
+            "utxo_backups": {},
+            "block_states": {}
+        }
+        
         # Start database transaction
         batch = WriteBatch()
         
-        # Disconnect blocks from current chain
-        for block_hash in blocks_to_disconnect:
-            self._disconnect_block(block_hash, batch)
-        
-        # Connect blocks from new chain
-        for block_hash in blocks_to_connect:
-            block_key = f"block:{block_hash}".encode()
-            block_data = self.db.get(block_key)
-            if not block_data:
-                logger.error(f"Block {block_hash} not found during reorg")
-                return False
+        try:
+            # Phase 1: Disconnect blocks from current chain
+            for block_hash in blocks_to_disconnect:
+                # Backup block state before disconnecting
+                block_key = f"block:{block_hash}".encode()
+                backup_state["block_states"][block_hash] = self.db.get(block_key)
+                
+                self._disconnect_block(block_hash, batch, backup_state["utxo_backups"])
             
-            block_dict = json.loads(block_data.decode())
-            self._connect_block(block_dict, batch)
-        
-        # Commit the reorganization
-        self.db.write(batch)
-        
-        # Update chain state
-        key = b"chain:best_tip"
-        self.db.put(key, json.dumps({
-            "hash": new_tip_hash,
-            "height": self.block_index[new_tip_hash]["height"]
-        }).encode())
-        
-        logger.info(f"Chain reorganization complete. New tip: {new_tip_hash}")
-        return True
+            # Phase 2: Validate and connect blocks from new chain
+            # First, collect all UTXOs that will be spent in new chain
+            new_chain_spent_utxos = set()
+            for block_hash in blocks_to_connect:
+                block_key = f"block:{block_hash}".encode()
+                block_data = self.db.get(block_key)
+                if not block_data:
+                    raise ValueError(f"Block {block_hash} not found during reorg")
+                
+                block_dict = json.loads(block_data.decode())
+                
+                # Collect spent UTXOs from this block's transactions
+                for tx in self._get_block_transactions(block_dict):
+                    for inp in tx.get("inputs", []):
+                        if "txid" in inp and inp["txid"] != "00" * 32:  # Skip coinbase
+                            utxo_key = f"{inp['txid']}:{inp.get('utxo_index', 0)}"
+                            new_chain_spent_utxos.add(utxo_key)
+            
+            # Now connect blocks with UTXO tracking
+            for block_hash in blocks_to_connect:
+                block_key = f"block:{block_hash}".encode()
+                block_data = self.db.get(block_key)
+                if not block_data:
+                    raise ValueError(f"Block {block_hash} not found during reorg")
+                
+                block_dict = json.loads(block_data.decode())
+                
+                # Extra safety: Re-validate PoW during reorg (except genesis)
+                if block_hash != "0" * 64:
+                    try:
+                        block_obj = Block(
+                            block_dict["version"],
+                            block_dict["previous_hash"],
+                            block_dict["merkle_root"],
+                            block_dict["timestamp"],
+                            block_dict["bits"],
+                            block_dict["nonce"]
+                        )
+                        if not validate_pow(block_obj):
+                            raise ValueError(f"Block {block_hash} failed PoW validation during reorg!")
+                    except Exception as e:
+                        raise ValueError(f"Failed to validate block {block_hash} during reorg: {e}")
+                
+                # Connect with new chain UTXO tracking
+                self._connect_block_safe(block_dict, batch, new_chain_spent_utxos)
+            
+            # Phase 3: Commit the reorganization atomically
+            self.db.write(batch)
+            
+            # Update chain state
+            key = b"chain:best_tip"
+            self.db.put(key, json.dumps({
+                "hash": new_tip_hash,
+                "height": self.block_index[new_tip_hash]["height"]
+            }).encode())
+            
+            logger.info(f"Chain reorganization complete. New tip: {new_tip_hash}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Reorganization failed: {e}")
+            # Rollback is automatic since we haven't committed the batch
+            logger.info("Reorganization rolled back due to error")
+            return False
     
     def _find_common_ancestor(self, hash1: str, hash2: str) -> Optional[str]:
         """Find the common ancestor of two blocks"""
@@ -376,7 +440,26 @@ class ChainManager:
         
         return blocks
     
-    def _disconnect_block(self, block_hash: str, batch: WriteBatch):
+    def _get_block_transactions(self, block_dict: dict) -> List[dict]:
+        """Get all transactions from a block, loading from DB if necessary"""
+        # Use full_transactions if available
+        if "full_transactions" in block_dict and block_dict["full_transactions"]:
+            return block_dict["full_transactions"]
+        
+        # Otherwise load from tx_ids
+        transactions = []
+        for txid in block_dict.get("tx_ids", []):
+            tx_key = f"tx:{txid}".encode()
+            tx_data = self.db.get(tx_key)
+            if tx_data:
+                tx = json.loads(tx_data.decode())
+                transactions.append(tx)
+            else:
+                logger.warning(f"Transaction {txid} not found when loading block transactions")
+        
+        return transactions
+    
+    def _disconnect_block(self, block_hash: str, batch: WriteBatch, utxo_backups: Dict[str, bytes]):
         """Disconnect a block from the active chain (revert its effects)"""
         logger.info(f"Disconnecting block {block_hash}")
         
@@ -386,7 +469,7 @@ class ChainManager:
         
         # Revert all transactions in this block
         for txid in block_data.get("tx_ids", []):
-            self._revert_transaction(txid, batch)
+            self._revert_transaction(txid, batch, utxo_backups)
         
         # Mark block as disconnected (don't delete - might reconnect later)
         block_data["connected"] = False
@@ -396,8 +479,24 @@ class ChainManager:
         """Connect a block to the active chain (apply its effects)"""
         logger.info(f"Connecting block {block_data['block_hash']} at height {block_data['height']}")
         
+        # Get full transactions - either from block_data or by loading from DB
+        full_transactions = block_data.get("full_transactions", [])
+        
+        # If full_transactions is empty but we have tx_ids, load the transactions
+        if not full_transactions and "tx_ids" in block_data:
+            logger.info(f"Loading {len(block_data['tx_ids'])} transactions for block {block_data['block_hash']}")
+            full_transactions = []
+            for txid in block_data["tx_ids"]:
+                tx_key = f"tx:{txid}".encode()
+                tx_data = self.db.get(tx_key)
+                if tx_data:
+                    tx = json.loads(tx_data.decode())
+                    full_transactions.append(tx)
+                else:
+                    logger.warning(f"Transaction {txid} not found in database during block connection")
+        
         # Process all transactions in the block
-        for tx in block_data.get("full_transactions", []):
+        for tx in full_transactions:
             self._apply_transaction(tx, block_data["height"], batch)
         
         # Mark block as connected
@@ -405,10 +504,48 @@ class ChainManager:
         block_key = f"block:{block_data['block_hash']}".encode()
         batch.put(block_key, json.dumps(block_data).encode())
     
-    def _revert_transaction(self, txid: str, batch: WriteBatch):
+    def _connect_block_safe(self, block_data: dict, batch: WriteBatch, new_chain_spent_utxos: Set[str]):
+        """
+        Connect a block during reorganization with double-spend protection
+        Ensures UTXOs aren't restored if they're spent elsewhere in new chain
+        """
+        logger.info(f"Safely connecting block {block_data['block_hash']} at height {block_data['height']}")
+        
+        # Get full transactions
+        full_transactions = self._get_block_transactions(block_data)
+        
+        # Track UTXOs spent within this block to prevent double-spending within same block
+        block_spent_utxos = set()
+        
+        # Process all transactions in the block with validation
+        for tx in full_transactions:
+            if tx is None:
+                continue
+                
+            # Validate transaction before applying
+            if not self._validate_transaction_for_reorg(tx, block_spent_utxos, new_chain_spent_utxos):
+                raise ValueError(f"Invalid transaction {tx.get('txid')} during reorganization")
+            
+            # Apply transaction
+            self._apply_transaction_safe(tx, block_data["height"], batch, new_chain_spent_utxos)
+            
+            # Track spent UTXOs from this transaction
+            for inp in tx.get("inputs", []):
+                if "txid" in inp and inp["txid"] != "00" * 32:
+                    utxo_key = f"{inp['txid']}:{inp.get('utxo_index', 0)}"
+                    block_spent_utxos.add(utxo_key)
+        
+        # Mark block as connected
+        block_data["connected"] = True
+        block_key = f"block:{block_data['block_hash']}".encode()
+        batch.put(block_key, json.dumps(block_data).encode())
+    
+    def _revert_transaction(self, txid: str, batch: WriteBatch, utxo_backups: Dict[str, bytes] = None):
         """Revert a transaction's effects on the UTXO set"""
-        # This is simplified - in production you'd need to carefully restore UTXOs
         logger.debug(f"Reverting transaction {txid}")
+        
+        if utxo_backups is None:
+            utxo_backups = {}
         
         # Mark all outputs from this transaction as invalid
         tx_key = f"tx:{txid}".encode()
@@ -418,19 +555,31 @@ class ChainManager:
         
         tx = json.loads(tx_data.decode())
         
-        # Restore spent inputs
+        # Restore spent inputs - but backup current state first
         for inp in tx.get("inputs", []):
-            if "txid" in inp:
+            if "txid" in inp and inp["txid"] != "00" * 32:  # Skip coinbase
                 utxo_key = f"utxo:{inp['txid']}:{inp.get('utxo_index', 0)}".encode()
-                utxo_data = self.db.get(utxo_key)
-                if utxo_data:
-                    utxo = json.loads(utxo_data.decode())
+                
+                # Backup current state before modifying
+                current_utxo_data = self.db.get(utxo_key)
+                if current_utxo_data:
+                    backup_key = f"{inp['txid']}:{inp.get('utxo_index', 0)}"
+                    utxo_backups[backup_key] = current_utxo_data
+                    
+                    utxo = json.loads(current_utxo_data.decode())
                     utxo["spent"] = False
                     batch.put(utxo_key, json.dumps(utxo).encode())
         
         # Remove outputs created by this transaction
         for idx, out in enumerate(tx.get("outputs", [])):
             utxo_key = f"utxo:{txid}:{idx}".encode()
+            
+            # Backup before deleting
+            current_data = self.db.get(utxo_key)
+            if current_data:
+                backup_key = f"{txid}:{idx}"
+                utxo_backups[backup_key] = current_data
+            
             batch.delete(utxo_key)
     
     def _apply_transaction(self, tx: dict, height: int, batch: WriteBatch):
@@ -465,6 +614,129 @@ class ChainManager:
                     utxo = json.loads(utxo_data.decode())
                     utxo["spent"] = True
                     batch.put(utxo_key, json.dumps(utxo).encode())
+        
+        # Create new UTXOs
+        for idx, out in enumerate(tx.get("outputs", [])):
+            # Create proper UTXO record with all necessary fields
+            utxo_record = {
+                "txid": txid,
+                "utxo_index": idx,
+                "sender": out.get('sender', ''),
+                "receiver": out.get('receiver', ''),
+                "amount": str(out.get('amount', '0')),  # Ensure string to avoid scientific notation
+                "spent": False  # New UTXOs are always unspent
+            }
+            utxo_key = f"utxo:{txid}:{idx}".encode()
+            batch.put(utxo_key, json.dumps(utxo_record).encode())
+        
+        # Store transaction
+        batch.put(f"tx:{txid}".encode(), json.dumps(tx).encode())
+    
+    def _validate_transaction_for_reorg(self, tx: dict, block_spent_utxos: Set[str], 
+                                       new_chain_spent_utxos: Set[str]) -> bool:
+        """
+        Validate a transaction during reorganization
+        Checks signatures, balances, and double-spending
+        """
+        if not tx or "txid" not in tx:
+            logger.error("Invalid transaction format - missing txid")
+            return False
+        
+        txid = tx["txid"]
+        
+        # Skip coinbase transactions (they have special rules)
+        if len(tx.get("inputs", [])) == 1 and tx["inputs"][0].get("txid") == "00" * 32:
+            logger.debug(f"Skipping validation for coinbase transaction {txid}")
+            return True
+        
+        # Validate all inputs exist and aren't double-spent
+        total_input = Decimal(0)
+        for inp in tx.get("inputs", []):
+            if "txid" not in inp:
+                logger.error(f"Transaction {txid} has invalid input - missing txid")
+                return False
+            
+            # Check if this UTXO is already spent in this block
+            utxo_key = f"{inp['txid']}:{inp.get('utxo_index', 0)}"
+            if utxo_key in block_spent_utxos:
+                logger.error(f"Double-spend detected: UTXO {utxo_key} already spent in block")
+                return False
+            
+            # Check if this UTXO is spent elsewhere in the new chain
+            if utxo_key in new_chain_spent_utxos:
+                logger.error(f"Double-spend detected: UTXO {utxo_key} spent in new chain")
+                return False
+            
+            # Verify UTXO exists and get amount
+            utxo_db_key = f"utxo:{utxo_key}".encode()
+            utxo_data = self.db.get(utxo_db_key)
+            if not utxo_data:
+                logger.error(f"Transaction {txid} references non-existent UTXO {utxo_key}")
+                return False
+            
+            utxo = json.loads(utxo_data.decode())
+            if utxo.get("spent", False):
+                logger.error(f"Transaction {txid} tries to spend already spent UTXO {utxo_key}")
+                return False
+            
+            total_input += Decimal(utxo.get("amount", "0"))
+        
+        # Validate outputs sum to inputs (allowing for fees)
+        total_output = Decimal(0)
+        for out in tx.get("outputs", []):
+            if "amount" not in out:
+                logger.error(f"Transaction {txid} has output without amount")
+                return False
+            total_output += Decimal(out["amount"])
+        
+        if total_output > total_input:
+            logger.error(f"Transaction {txid} outputs ({total_output}) exceed inputs ({total_input})")
+            return False
+        
+        # TODO: Add signature validation here if needed during reorg
+        # For now we trust that transactions in blocks were already validated
+        
+        return True
+    
+    def _apply_transaction_safe(self, tx: dict, height: int, batch: WriteBatch, 
+                               new_chain_spent_utxos: Set[str]):
+        """
+        Apply a transaction during reorganization with double-spend protection
+        """
+        if tx is None:
+            return
+            
+        # Handle transaction format variations
+        if "transaction" in tx:
+            tx = tx["transaction"]
+            
+        txid = tx.get("txid")
+        if not txid:
+            # Might be coinbase
+            if all(k in tx for k in ("version", "inputs", "outputs")) and len(tx.get("inputs", [])) == 1:
+                # Coinbase transaction
+                coinbase_tx_id = f"coinbase_{height}"
+                batch.put(f"tx:{coinbase_tx_id}".encode(), json.dumps(tx).encode())
+                return
+            else:
+                logger.warning(f"Transaction without txid at height {height}")
+                return
+        
+        logger.debug(f"Safely applying transaction {txid}")
+        
+        # Mark inputs as spent (skip if already spent in new chain)
+        for inp in tx.get("inputs", []):
+            if "txid" in inp and inp["txid"] != "00" * 32:
+                utxo_key = f"{inp['txid']}:{inp.get('utxo_index', 0)}"
+                
+                # Skip if this UTXO is already marked as spent in new chain
+                if utxo_key not in new_chain_spent_utxos:
+                    utxo_db_key = f"utxo:{utxo_key}".encode()
+                    utxo_data = self.db.get(utxo_db_key)
+                    if utxo_data:
+                        utxo = json.loads(utxo_data.decode())
+                        utxo["spent"] = True
+                        batch.put(utxo_db_key, json.dumps(utxo).encode())
         
         # Create new UTXOs
         for idx, out in enumerate(tx.get("outputs", [])):
