@@ -2,6 +2,37 @@
 from hashlib import sha256
 import protobuf.blockchain_pb2 as pb
 
+def parse_p2pkh_script_sig(script_sig: bytes):
+    """
+    Parses a P2PKH scriptSig and extracts:
+    - The signature (DER-encoded)
+    - The SIGHASH type
+    - The public key
+
+    Args:
+        script_sig (bytes): The raw scriptSig
+
+    Returns:
+        dict: Parsed components
+    """
+    # First byte: length of the signature (includes sighash type)
+    sig_len = script_sig[0]
+    signature_with_sighash = script_sig[1:1 + sig_len]
+
+    # Signature is all bytes except the last one (sighash type)
+    signature = signature_with_sighash[:-1]
+    sighash_type = signature_with_sighash[-1]
+
+    # Next byte: length of the pubkey
+    pubkey_len = script_sig[1 + sig_len]
+    pubkey = script_sig[1 + sig_len + 1 : 1 + sig_len + 1 + pubkey_len]
+
+    return {
+        "signature": signature,
+        "sighash_type": sighash_type,
+        "pubkey": pubkey
+    }
+
 def address_from_script_pubkey(script_pubkey: bytes, mainnet=True) -> bytes:
     """
     Extracts the address from a script pubkey.

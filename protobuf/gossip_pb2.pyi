@@ -39,9 +39,7 @@ class GossipStatusData(_message.Message):
     def __init__(self, mempool_size: _Optional[int] = ..., tip_hash: _Optional[bytes] = ...) -> None: ...
 
 class GossipTransactionData(_message.Message):
-    __slots__ = ("hash", "transaction")
-    HASH_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = ("transaction",)
     TRANSACTION_FIELD_NUMBER: _ClassVar[int]
-    hash: bytes
     transaction: _blockchain_pb2.Transaction
-    def __init__(self, hash: _Optional[bytes] = ..., transaction: _Optional[_Union[_blockchain_pb2.Transaction, _Mapping]] = ...) -> None: ...
+    def __init__(self, transaction: _Optional[_Union[_blockchain_pb2.Transaction, _Mapping]] = ...) -> None: ...

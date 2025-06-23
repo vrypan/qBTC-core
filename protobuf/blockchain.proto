@@ -29,6 +29,12 @@ message Transaction {
     uint32 locktime = 4;
 };
 
+// TxInput.script_sig and TxOutput.script_pubkey have exactly the
+// same format. One can actually check if
+// oldOutput = TxInput.txid.vout
+// TxInput.script_sig == oldOutput.script_pubkey
+//
+// TBD is we actually need TxOutput.script_pubkey!!!
 message TxInput {
   bytes txid = 1;              // 32-byte hash of previous transaction
   uint32 vout = 2;             // Output index in previous transaction

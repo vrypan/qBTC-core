@@ -25,19 +25,19 @@ _sym_db = _symbol_database.Default()
 from . import blockchain_pb2 as blockchain__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0cgossip.proto\x1a\x10\x62lockchain.proto\"\xb0\x01\n\rGossipMessage\x12 \n\x04type\x18\x01 \x01(\x0e\x32\x12.GossipMessageType\x12\x17\n\x05\x62lock\x18\x02 \x01(\x0b\x32\x06.BlockH\x00\x12\x32\n\x10transaction_data\x18\x03 \x01(\x0b\x32\x16.GossipTransactionDataH\x00\x12(\n\x0bstatus_data\x18\x04 \x01(\x0b\x32\x11.GossipStatusDataH\x00\x42\x06\n\x04\x64\x61ta\":\n\x10GossipStatusData\x12\x14\n\x0cmempool_size\x18\x01 \x01(\r\x12\x10\n\x08tip_hash\x18\x02 \x01(\x0c\"H\n\x15GossipTransactionData\x12\x0c\n\x04hash\x18\x01 \x01(\x0c\x12!\n\x0btransaction\x18\x02 \x01(\x0b\x32\x0c.Transaction*H\n\x11GossipMessageType\x12\x0b\n\x07UNKNOWN\x10\x00\x12\t\n\x05\x42LOCK\x10\x01\x12\x0f\n\x0bTRANSACTION\x10\x02\x12\n\n\x06STATUS\x10\x03\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0cgossip.proto\x1a\x10\x62lockchain.proto\"\xb0\x01\n\rGossipMessage\x12 \n\x04type\x18\x01 \x01(\x0e\x32\x12.GossipMessageType\x12\x17\n\x05\x62lock\x18\x02 \x01(\x0b\x32\x06.BlockH\x00\x12\x32\n\x10transaction_data\x18\x03 \x01(\x0b\x32\x16.GossipTransactionDataH\x00\x12(\n\x0bstatus_data\x18\x04 \x01(\x0b\x32\x11.GossipStatusDataH\x00\x42\x06\n\x04\x64\x61ta\":\n\x10GossipStatusData\x12\x14\n\x0cmempool_size\x18\x01 \x01(\r\x12\x10\n\x08tip_hash\x18\x02 \x01(\x0c\":\n\x15GossipTransactionData\x12!\n\x0btransaction\x18\x02 \x01(\x0b\x32\x0c.Transaction*H\n\x11GossipMessageType\x12\x0b\n\x07UNKNOWN\x10\x00\x12\t\n\x05\x42LOCK\x10\x01\x12\x0f\n\x0bTRANSACTION\x10\x02\x12\n\n\x06STATUS\x10\x03\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'gossip_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_GOSSIPMESSAGETYPE']._serialized_start=347
-  _globals['_GOSSIPMESSAGETYPE']._serialized_end=419
+  _globals['_GOSSIPMESSAGETYPE']._serialized_start=333
+  _globals['_GOSSIPMESSAGETYPE']._serialized_end=405
   _globals['_GOSSIPMESSAGE']._serialized_start=35
   _globals['_GOSSIPMESSAGE']._serialized_end=211
   _globals['_GOSSIPSTATUSDATA']._serialized_start=213
   _globals['_GOSSIPSTATUSDATA']._serialized_end=271
   _globals['_GOSSIPTRANSACTIONDATA']._serialized_start=273
-  _globals['_GOSSIPTRANSACTIONDATA']._serialized_end=345
+  _globals['_GOSSIPTRANSACTIONDATA']._serialized_end=331
 # @@protoc_insertion_point(module_scope)

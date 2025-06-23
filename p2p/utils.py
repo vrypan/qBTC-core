@@ -1,11 +1,10 @@
 import os
 import random
 import time
-from protobuf.blockchain_pb2 import (TxInput, TxOutput,
-    Block, BlockHeader
-)
+from protobuf.blockchain_pb2 import Block, BlockHeader
 from protobuf.rpc_pb2_grpc import NodeServiceStub
 from protobuf.request_response_pb2 import Empty
+from .testlibs import random_transaction
 import grpc
 
 def random_block(height: int) -> Block:
