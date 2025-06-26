@@ -96,7 +96,7 @@ def utxo_set(txid: bytes, vout: int, output: pb.TxOutput) -> bytes:
     db = db_instance()
     address = address_from_script_pubkey(output.script_pubkey)
     key = b"addr:" + address + b":" + txid[:8] + vout.to_bytes(4, 'big')
-    value = pb.Utxo(txid=txid, vout=vout, output=output).SerializeToString()
+    value = pb.Utxo(txid=txid, vout=vout, output=output).SerializeToString(deterministic=True)
     db[key] = value
     return key
 
@@ -153,7 +153,7 @@ def tx_set(tx: pb.Transaction) -> bytes:
     """
     db = db_instance()
     hash = calculate_tx_hash(tx)
-    db[b"tx:" + hash] = tx.SerializeToString()
+    db[b"tx:" + hash] = tx.SerializeToString(deterministic=True)
     for vin in tx.inputs:
         utxo_delete(vin)
     for vout, output in enumerate(tx.outputs):
@@ -193,7 +193,7 @@ def block_set(block: pb.Block):
     for tx in block.tx:
         tx_hash = tx_set(tx)
         db_block.txid.append(tx_hash)
-    db[b"block:" + block.hash] = db_block.SerializeToString()
+    db[b"block:" + block.hash] = db_block.SerializeToString(deterministic=True)
     tip_set(db_block)
 
 def block_exists(block_hash: bytes) -> bool:
