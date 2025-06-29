@@ -13,7 +13,7 @@ from database.database import get_db, get_current_height
 from wallet.wallet import verify_transaction
 from pydantic import BaseModel
 from blockchain.blockchain import sha256d, serialize_transaction
-from state.state import pending_transactions
+from state.state import mempool_manager
 from config.config import CHAIN_ID
 
 # Import security components
@@ -342,10 +342,11 @@ def get_transactions(wallet_address: str, limit: int = 50):
     
     # Add pending transactions from mempool
     logging.info(f"Checking mempool for pending transactions...")
-    logging.info(f"Current mempool size: {len(pending_transactions)}")
-    logging.info(f"Mempool transactions: {list(pending_transactions.keys())}")
+    all_mempool_txs = mempool_manager.get_all_transactions()
+    logging.info(f"Current mempool size: {len(all_mempool_txs)}")
+    logging.info(f"Mempool transactions: {list(all_mempool_txs.keys())}")
     mempool_count = 0
-    for txid, tx in pending_transactions.items():
+    for txid, tx in all_mempool_txs.items():
         # Check if this transaction involves our wallet
         involves_wallet = False
         
@@ -621,6 +622,41 @@ async def get_transactions_endpoint(wallet_address: str, limit: int = 50):
         logger.error(f"Error getting transactions for {wallet_address}: {str(e)}")
         raise HTTPException(status_code=500, detail="Error retrieving transactions")
 
+@app.get("/utxos/{wallet_address}")
+async def get_utxos_endpoint(wallet_address: str):
+    """Get unspent transaction outputs (UTXOs) for a wallet address"""
+    # Validate address format
+    if not wallet_address.startswith('bqs') or len(wallet_address) < 20:
+        raise ValidationError("Invalid wallet address format")
+    
+    try:
+        db = get_db()
+        utxos = []
+        
+        for key, value in db.items():
+            if key.startswith(b"utxo:"):
+                utxo_data = json.loads(value.decode())
+                # Only include unspent UTXOs that belong to this address
+                if utxo_data["receiver"] == wallet_address and not utxo_data.get("spent", False):
+                    utxos.append({
+                        "txid": utxo_data.get("txid"),
+                        "vout": utxo_data.get("utxo_index", 0),  # output index
+                        "amount": utxo_data.get("amount"),
+                        "address": wallet_address,
+                        "confirmations": 1,  # Since we don't track confirmations in qBTC, assume confirmed
+                        "spendable": True,
+                        "solvable": True
+                    })
+        
+        return {
+            "wallet_address": wallet_address,
+            "utxos": utxos,
+            "count": len(utxos)
+        }
+    except Exception as e:
+        logger.error(f"Error getting UTXOs for {wallet_address}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error retrieving UTXOs")
+
 @app.get("/debug/utxos")
 async def debug_utxos(localhost_only: bool = Depends(require_localhost)):
     """Debug endpoint to show all UTXOs in the database"""
@@ -742,10 +778,13 @@ async def health_check(request: Request):
 async def debug_mempool(localhost_only: bool = Depends(require_localhost)):
     """Debug endpoint to check mempool status"""
     try:
+        stats = mempool_manager.get_stats()
+        all_txs = mempool_manager.get_all_transactions()
         return {
-            "mempool_size": len(pending_transactions),
-            "transactions": list(pending_transactions.keys()),
-            "timestamp": datetime.utcnow().isoformat()
+            "mempool_size": len(all_txs),
+            "transactions": list(all_txs.keys()),
+            "timestamp": datetime.utcnow().isoformat(),
+            "stats": stats
         }
     except Exception as e:
         logger.error(f"Error getting mempool status: {str(e)}")
@@ -965,8 +1004,12 @@ async def worker_endpoint(request: Request):
         txid = sha256d(bytes.fromhex(raw_tx))[::-1].hex() 
         transaction["txid"] = txid
         # Don't add txid to outputs - this contaminates the transaction structure
-        pending_transactions[txid] = transaction
-        logger.info(f"[MEMPOOL] Added transaction {txid} to mempool. Current size: {len(pending_transactions)}")
+        success, error = mempool_manager.add_transaction(transaction)
+        if not success:
+            # This means the transaction conflicts with existing mempool transactions
+            logger.warning(f"[MEMPOOL] Rejected transaction {txid}: {error}")
+            raise ValidationError(f"Transaction rejected: {error}")
+        logger.info(f"[MEMPOOL] Added transaction {txid} to mempool. Current size: {mempool_manager.size()}")
         #db.put(b"tx:" + txid.encode(), json.dumps(transaction).encode())
 
         # Emit mempool transaction event

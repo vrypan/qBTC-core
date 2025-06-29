@@ -4,7 +4,7 @@ import time
 import random
 from asyncio import StreamReader, StreamWriter
 from config.config import DEFAULT_GOSSIP_PORT
-from state.state import pending_transactions
+from state.state import mempool_manager
 from wallet.wallet import verify_transaction
 from database.database import get_db, get_current_height
 from dht.dht import push_blocks
@@ -185,7 +185,7 @@ class GossipNode:
                 # Transaction was already seen and processed
                 self.tx_stats['duplicates'] += 1
                 return
-            if txid in pending_transactions:
+            if mempool_manager.get_transaction(txid) is not None:
                 # Transaction is already in mempool
                 self.tx_stats['duplicates'] += 1
                 return
@@ -213,7 +213,7 @@ class GossipNode:
             tx_lock = asyncio.Lock()
             
             async with tx_lock:
-                if txid in pending_transactions:
+                if mempool_manager.get_transaction(txid) is not None:
                     return
                 
                 # Use the calculated txid for consistency
@@ -221,8 +221,14 @@ class GossipNode:
                 
                 # Store just the transaction data, not the entire gossip message
                 # This ensures consistency with how transactions are stored from web API
-                pending_transactions[txid] = msg
-                logger.info(f"[MEMPOOL] Added gossiped transaction {txid} to mempool. Current size: {len(pending_transactions)}")
+                success, error = mempool_manager.add_transaction(msg)
+                if not success:
+                    # This means the transaction conflicts with existing mempool transactions
+                    logger.warning(f"[MEMPOOL] Rejected transaction {txid}: {error}")
+                    return
+                    
+                logger.info(f"[MEMPOOL] Added gossiped transaction {txid} to mempool. Current size: {mempool_manager.size()}")
+                    
                 # Add to seen_tx BEFORE broadcasting to prevent loops
                 self.seen_tx.add(txid)
                 self.seen_tx_timestamps[txid] = int(time.time())

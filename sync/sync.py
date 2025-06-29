@@ -5,7 +5,7 @@ from blockchain.chain_singleton import get_chain_manager
 from config.config import ADMIN_ADDRESS, GENESIS_ADDRESS, CHAIN_ID, TX_EXPIRATION_TIME
 from wallet.wallet import verify_transaction
 from blockchain.event_integration import emit_database_event
-from state.state import pending_transactions
+from state.state import mempool_manager
 from events.event_bus import event_bus, EventTypes
 import asyncio
 import json
@@ -200,12 +200,9 @@ def _process_block_in_chain(block: dict):
             else:
                 msg_str = body.get("msg_str", "")
                 parts = msg_str.split(":")
-                # Updated format: sender:receiver:amount:timestamp:chain_id
-                if len(parts) == 4:
-                    # Legacy format without chain ID - reject for replay protection
-                    raise ValueError(f"Transaction {txid} missing chain ID - potential replay attack")
-                elif len(parts) != 5:
-                    raise ValueError(f"Malformed msg_str in tx {txid}: {msg_str}")
+                # MANDATORY format: sender:receiver:amount:timestamp:chain_id
+                if len(parts) != 5:
+                    raise ValueError(f"Transaction {txid} invalid format - must have sender:receiver:amount:timestamp:chain_id")
                 from_, to_, total_authorized, time_, tx_chain_id = parts
                 
                 # Validate chain ID
@@ -375,21 +372,26 @@ def _process_block_in_chain(block: dict):
     db.write(batch)
     logging.info("[SYNC] Stored block %s (height %s) successfully", block_hash, height)
     
-    # Remove transactions from mempool (pending_transactions)
+    # Remove transactions from mempool
     # Skip the first tx_id as it's the coinbase transaction
-    removed_count = 0
+    
+    # Remove confirmed transactions using mempool manager
+    confirmed_txids = tx_ids[1:]  # Skip coinbase (first transaction)
+    
+    # Track which transactions were actually in our mempool before removal
     confirmed_from_mempool = []
-    for txid in tx_ids[1:]:  # Skip coinbase (first transaction)
-        if txid in pending_transactions:
-            logging.info(f"[SYNC] Removing transaction {txid} from mempool")
-            pending_transactions.pop(txid, None)
-            removed_count += 1
+    for txid in confirmed_txids:
+        if mempool_manager.get_transaction(txid) is not None:
             confirmed_from_mempool.append(txid)
+            logging.debug(f"[SYNC] Transaction {txid} was in our mempool")
         else:
             logging.debug(f"[SYNC] Transaction {txid} not in mempool (might be from another node)")
     
-    if removed_count > 0:
-        logging.info(f"[SYNC] Removed {removed_count} transactions from mempool after block {block_hash}")
+    # Now remove them
+    mempool_manager.remove_confirmed_transactions(confirmed_txids)
+    
+    if confirmed_from_mempool:
+        logging.info(f"[SYNC] Removed {len(confirmed_from_mempool)} transactions from mempool after block {block_hash}")
     
     # Emit confirmation events for transactions that were in mempool
     for txid in confirmed_from_mempool:

@@ -11,6 +11,7 @@ from collections import defaultdict
 from database.database import get_db
 from blockchain.blockchain import Block, validate_pow, bits_to_target, sha256d
 from blockchain.difficulty import get_next_bits, validate_block_bits, validate_block_timestamp
+from blockchain.transaction_validator import TransactionValidator
 from rocksdict import WriteBatch
 
 logger = logging.getLogger(__name__)
@@ -28,8 +29,12 @@ class ChainManager:
     def __init__(self):
         self.db = get_db()
         self.orphan_blocks: Dict[str, dict] = {}  # hash -> block data
+        self.validator = TransactionValidator(self.db)
+        self.orphan_timestamps: Dict[str, int] = {}  # hash -> timestamp when added
         self.block_index: Dict[str, dict] = {}  # hash -> block metadata
         self.chain_tips: Set[str] = set()  # Set of chain tip hashes
+        self.MAX_ORPHAN_BLOCKS = 100  # Maximum number of orphan blocks to keep
+        self.MAX_ORPHAN_AGE = 3600  # Maximum age of orphan blocks in seconds (1 hour)
         self._initialize_index()
     
     def _initialize_index(self):
@@ -137,22 +142,6 @@ class ChainManager:
         prev_hash = block_data["previous_hash"]
         height = block_data["height"]
         
-        # Store the block immediately if we don't have it yet
-        block_key = f"block:{block_hash}".encode()
-        if block_key not in self.db:
-            logger.info(f"Storing new block {block_hash} at height {height}")
-            self.db.put(block_key, json.dumps(block_data).encode())
-            
-            # Also store transactions separately for fork blocks
-            # This ensures they're available during reorganization
-            if "full_transactions" in block_data:
-                for tx in block_data["full_transactions"]:
-                    if tx and "txid" in tx:
-                        tx_key = f"tx:{tx['txid']}".encode()
-                        if tx_key not in self.db:
-                            self.db.put(tx_key, json.dumps(tx).encode())
-                            logger.debug(f"Stored transaction {tx['txid']} from block {block_hash}")
-        
         # Check if block already exists
         if block_hash in self.block_index:
             return True, None  # Already have this block
@@ -221,6 +210,48 @@ class ChainManager:
             self._add_orphan(block_data)
             return True, None
         
+        # CRITICAL: Validate all transactions before accepting the block
+        # This prevents invalid transactions from entering the chain
+        if "full_transactions" in block_data and block_data["full_transactions"]:
+            logger.info(f"Validating {len(block_data['full_transactions'])} transactions in block {block_hash}")
+            
+            # Validate all non-coinbase transactions
+            is_valid, error_msg, total_fees = self.validator.validate_block_transactions(block_data)
+            if not is_valid:
+                logger.error(f"Block {block_hash} rejected: {error_msg}")
+                return False, error_msg
+            
+            # Find and validate coinbase transaction
+            coinbase_tx = None
+            for tx in block_data["full_transactions"]:
+                if tx and self.validator._is_coinbase_transaction(tx):
+                    coinbase_tx = tx
+                    break
+            
+            if coinbase_tx and height > 0:  # Skip coinbase validation for genesis
+                is_valid, error_msg = self.validator.validate_coinbase_transaction(
+                    coinbase_tx, height, total_fees
+                )
+                if not is_valid:
+                    logger.error(f"Block {block_hash} rejected: invalid coinbase - {error_msg}")
+                    return False, f"Invalid coinbase transaction: {error_msg}"
+        
+        # Now that validation has passed and we have the parent, store the block
+        block_key = f"block:{block_hash}".encode()
+        if block_key not in self.db:
+            logger.info(f"Storing new block {block_hash} at height {height}")
+            self.db.put(block_key, json.dumps(block_data).encode())
+            
+            # Also store transactions separately for fork blocks
+            # This ensures they're available during reorganization
+            if "full_transactions" in block_data:
+                for tx in block_data["full_transactions"]:
+                    if tx and "txid" in tx:
+                        tx_key = f"tx:{tx['txid']}".encode()
+                        if tx_key not in self.db:
+                            self.db.put(tx_key, json.dumps(tx).encode())
+                            logger.debug(f"Stored transaction {tx['txid']} from block {block_hash}")
+        
         # Add block to index
         self.block_index[block_hash] = {
             "height": height,
@@ -264,7 +295,21 @@ class ChainManager:
         """Add a block to the orphan pool"""
         block_hash = block_data["block_hash"]
         logger.info(f"Adding orphan block {block_hash}")
+        
+        # Clean up old orphans before adding new one
+        self._cleanup_orphans()
+        
+        # Add the new orphan
         self.orphan_blocks[block_hash] = block_data
+        self.orphan_timestamps[block_hash] = int(time.time())
+        
+        # Enforce size limit (remove oldest if over limit)
+        if len(self.orphan_blocks) > self.MAX_ORPHAN_BLOCKS:
+            # Find oldest orphan
+            oldest_hash = min(self.orphan_timestamps.items(), key=lambda x: x[1])[0]
+            logger.info(f"Removing oldest orphan {oldest_hash} due to size limit")
+            del self.orphan_blocks[oldest_hash]
+            del self.orphan_timestamps[oldest_hash]
     
     def _process_orphans_for_block(self, parent_hash: str):
         """Try to connect any orphans that have this block as parent"""
@@ -281,6 +326,8 @@ class ChainManager:
         # Remove connected orphans
         for orphan_hash in connected:
             del self.orphan_blocks[orphan_hash]
+            if orphan_hash in self.orphan_timestamps:
+                del self.orphan_timestamps[orphan_hash]
     
     def _should_reorganize(self, new_tip_hash: str) -> bool:
         """Check if a new block creates a better chain than current"""
@@ -517,14 +564,60 @@ class ChainManager:
         # Track UTXOs spent within this block to prevent double-spending within same block
         block_spent_utxos = set()
         
+        # Track fees for coinbase validation
+        total_fees = Decimal("0")
+        coinbase_tx = None
+        
         # Process all transactions in the block with validation
         for tx in full_transactions:
             if tx is None:
                 continue
+            
+            # Check if this is coinbase
+            if self.validator._is_coinbase_transaction(tx):
+                coinbase_tx = tx
+                continue  # Validate coinbase after we know total fees
                 
             # Validate transaction before applying
             if not self._validate_transaction_for_reorg(tx, block_spent_utxos, new_chain_spent_utxos):
                 raise ValueError(f"Invalid transaction {tx.get('txid')} during reorganization")
+            
+            # Calculate transaction fee
+            total_input = Decimal("0")
+            total_output = Decimal("0")
+            
+            for inp in tx.get("inputs", []):
+                if "txid" in inp and inp["txid"] != "00" * 32:
+                    utxo_key = f"utxo:{inp['txid']}:{inp.get('utxo_index', 0)}".encode()
+                    utxo_data = self.db.get(utxo_key)
+                    if utxo_data:
+                        utxo = json.loads(utxo_data.decode())
+                        total_input += Decimal(utxo.get("amount", "0"))
+            
+            for out in tx.get("outputs", []):
+                total_output += Decimal(out.get("amount", "0"))
+            
+            if total_input > total_output:
+                total_fees += (total_input - total_output)
+        
+        # Validate coinbase transaction if present
+        if coinbase_tx and block_data["height"] > 0:
+            is_valid, error_msg = self.validator.validate_coinbase_transaction(
+                coinbase_tx, block_data["height"], total_fees
+            )
+            if not is_valid:
+                raise ValueError(f"Invalid coinbase during reorganization: {error_msg}")
+        
+        # Now apply all transactions (including coinbase)
+        for tx in full_transactions:
+            if tx is None:
+                continue
+                
+            # Skip re-validation for non-coinbase (already validated above)
+            if not self.validator._is_coinbase_transaction(tx):
+                # Validate transaction before applying (redundant but safe)
+                if not self._validate_transaction_for_reorg(tx, block_spent_utxos, new_chain_spent_utxos):
+                    raise ValueError(f"Invalid transaction {tx.get('txid')} during reorganization")
             
             # Apply transaction
             self._apply_transaction_safe(tx, block_data["height"], batch, new_chain_spent_utxos)
@@ -590,44 +683,51 @@ class ChainManager:
         # Handle transaction format variations
         if "transaction" in tx:
             tx = tx["transaction"]
-            
+        
+        # Check if this is a coinbase transaction
+        is_coinbase = self.validator._is_coinbase_transaction(tx)
+        
+        # Get or generate transaction ID
         txid = tx.get("txid")
-        if not txid:
-            # Might be coinbase
-            if all(k in tx for k in ("version", "inputs", "outputs")) and len(tx.get("inputs", [])) == 1:
-                # Coinbase transaction
-                coinbase_tx_id = f"coinbase_{height}"
-                batch.put(f"tx:{coinbase_tx_id}".encode(), json.dumps(tx).encode())
-                return
-            else:
-                logger.warning(f"Transaction without txid at height {height}")
-                return
+        if not txid and is_coinbase:
+            # Generate a proper txid for coinbase by hashing the transaction
+            tx_str = json.dumps(tx, sort_keys=True)
+            txid = sha256d(tx_str.encode()).hex()
+            tx["txid"] = txid  # Add txid to the transaction
+            logger.info(f"Generated txid for coinbase at height {height}: {txid}")
+        elif not txid:
+            logger.warning(f"Transaction without txid at height {height}")
+            return
         
         logger.debug(f"Applying transaction {txid}")
         
-        # Mark inputs as spent
-        for inp in tx.get("inputs", []):
-            if "txid" in inp:
-                utxo_key = f"utxo:{inp['txid']}:{inp.get('utxo_index', 0)}".encode()
-                utxo_data = self.db.get(utxo_key)
-                if utxo_data:
-                    utxo = json.loads(utxo_data.decode())
-                    utxo["spent"] = True
-                    batch.put(utxo_key, json.dumps(utxo).encode())
+        # Mark inputs as spent (skip for coinbase)
+        if not is_coinbase:
+            for inp in tx.get("inputs", []):
+                if "txid" in inp and inp["txid"] != "00" * 32:
+                    utxo_key = f"utxo:{inp['txid']}:{inp.get('utxo_index', 0)}".encode()
+                    utxo_data = self.db.get(utxo_key)
+                    if utxo_data:
+                        utxo = json.loads(utxo_data.decode())
+                        utxo["spent"] = True
+                        batch.put(utxo_key, json.dumps(utxo).encode())
         
-        # Create new UTXOs
+        # Create new UTXOs (including for coinbase!)
         for idx, out in enumerate(tx.get("outputs", [])):
             # Create proper UTXO record with all necessary fields
             utxo_record = {
                 "txid": txid,
                 "utxo_index": idx,
-                "sender": out.get('sender', ''),
+                "sender": "coinbase" if is_coinbase else out.get('sender', ''),
                 "receiver": out.get('receiver', ''),
                 "amount": str(out.get('amount', '0')),  # Ensure string to avoid scientific notation
                 "spent": False  # New UTXOs are always unspent
             }
             utxo_key = f"utxo:{txid}:{idx}".encode()
             batch.put(utxo_key, json.dumps(utxo_record).encode())
+            
+            if is_coinbase:
+                logger.info(f"Created coinbase UTXO: {utxo_key.decode()} for {out.get('receiver')} amount: {out.get('amount')}")
         
         # Store transaction
         batch.put(f"tx:{txid}".encode(), json.dumps(tx).encode())
@@ -693,8 +793,55 @@ class ChainManager:
             logger.error(f"Transaction {txid} outputs ({total_output}) exceed inputs ({total_input})")
             return False
         
-        # TODO: Add signature validation here if needed during reorg
-        # For now we trust that transactions in blocks were already validated
+        # CRITICAL: Verify transaction signature during reorg
+        # This prevents invalid transactions from being accepted during chain reorganization
+        
+        # Get transaction body for signature verification
+        if "transaction" in tx:
+            body = tx["transaction"].get("body", {})
+        else:
+            logger.error(f"Transaction {txid} missing transaction body")
+            return False
+        
+        msg_str = body.get("msg_str", "")
+        signature = body.get("signature", "")
+        pubkey = body.get("pubkey", "")
+        
+        # Parse message string to validate chain ID and timestamp
+        if msg_str:  # Skip for coinbase which has no msg_str
+            parts = msg_str.split(":")
+            if len(parts) == 5:
+                from_, to_, amount_str, time_str, tx_chain_id = parts
+                
+                # Validate chain ID (replay protection)
+                try:
+                    from config.config import CHAIN_ID
+                    if int(tx_chain_id) != CHAIN_ID:
+                        logger.error(f"Invalid chain ID in tx {txid} during reorg: expected {CHAIN_ID}, got {tx_chain_id}")
+                        return False
+                except (ValueError, ImportError) as e:
+                    logger.error(f"Chain ID validation error in tx {txid}: {e}")
+                    return False
+                
+                # Validate timestamp
+                try:
+                    from config.config import TX_EXPIRATION_TIME
+                    tx_timestamp = int(time_str)
+                    current_time = int(time.time() * 1000)
+                    tx_age = (current_time - tx_timestamp) / 1000
+                    
+                    if tx_age > TX_EXPIRATION_TIME:
+                        logger.error(f"Transaction {txid} expired during reorg: age {tx_age}s > max {TX_EXPIRATION_TIME}s")
+                        return False
+                except (ValueError, ImportError) as e:
+                    logger.error(f"Timestamp validation error in tx {txid}: {e}")
+                    return False
+                
+                # Verify signature
+                from wallet.wallet import verify_transaction
+                if not verify_transaction(msg_str, signature, pubkey):
+                    logger.error(f"Signature verification failed for tx {txid} during reorg")
+                    return False
         
         return True
     
@@ -709,18 +856,21 @@ class ChainManager:
         # Handle transaction format variations
         if "transaction" in tx:
             tx = tx["transaction"]
-            
+        
+        # Check if this is a coinbase transaction
+        is_coinbase = self.validator._is_coinbase_transaction(tx)
+        
+        # Get or generate transaction ID
         txid = tx.get("txid")
-        if not txid:
-            # Might be coinbase
-            if all(k in tx for k in ("version", "inputs", "outputs")) and len(tx.get("inputs", [])) == 1:
-                # Coinbase transaction
-                coinbase_tx_id = f"coinbase_{height}"
-                batch.put(f"tx:{coinbase_tx_id}".encode(), json.dumps(tx).encode())
-                return
-            else:
-                logger.warning(f"Transaction without txid at height {height}")
-                return
+        if not txid and is_coinbase:
+            # Generate a proper txid for coinbase by hashing the transaction
+            tx_str = json.dumps(tx, sort_keys=True)
+            txid = sha256d(tx_str.encode()).hex()
+            tx["txid"] = txid  # Add txid to the transaction
+            logger.info(f"Generated txid for coinbase at height {height}: {txid}")
+        elif not txid:
+            logger.warning(f"Transaction without txid at height {height}")
+            return
         
         logger.debug(f"Safely applying transaction {txid}")
         
@@ -738,19 +888,22 @@ class ChainManager:
                         utxo["spent"] = True
                         batch.put(utxo_db_key, json.dumps(utxo).encode())
         
-        # Create new UTXOs
+        # Create new UTXOs (including for coinbase!)
         for idx, out in enumerate(tx.get("outputs", [])):
             # Create proper UTXO record with all necessary fields
             utxo_record = {
                 "txid": txid,
                 "utxo_index": idx,
-                "sender": out.get('sender', ''),
+                "sender": "coinbase" if is_coinbase else out.get('sender', ''),
                 "receiver": out.get('receiver', ''),
                 "amount": str(out.get('amount', '0')),  # Ensure string to avoid scientific notation
                 "spent": False  # New UTXOs are always unspent
             }
             utxo_key = f"utxo:{txid}:{idx}".encode()
             batch.put(utxo_key, json.dumps(utxo_record).encode())
+            
+            if is_coinbase:
+                logger.info(f"Created coinbase UTXO during reorg: {utxo_key.decode()} for {out.get('receiver')} amount: {out.get('amount')}")
         
         # Store transaction
         batch.put(f"tx:{txid}".encode(), json.dumps(tx).encode())
@@ -778,3 +931,44 @@ class ChainManager:
                 break
         
         return False
+    
+    def _cleanup_orphans(self):
+        """Remove orphans that are too old"""
+        current_time = int(time.time())
+        to_remove = []
+        
+        for orphan_hash, timestamp in self.orphan_timestamps.items():
+            age = current_time - timestamp
+            if age > self.MAX_ORPHAN_AGE:
+                logger.info(f"Removing orphan {orphan_hash} due to age ({age}s)")
+                to_remove.append(orphan_hash)
+        
+        for orphan_hash in to_remove:
+            del self.orphan_blocks[orphan_hash]
+            del self.orphan_timestamps[orphan_hash]
+    
+    def get_orphan_info(self) -> dict:
+        """Get information about current orphan blocks"""
+        current_time = int(time.time())
+        orphans = []
+        
+        for orphan_hash, orphan_data in self.orphan_blocks.items():
+            timestamp = self.orphan_timestamps.get(orphan_hash, 0)
+            age = current_time - timestamp
+            
+            orphans.append({
+                "hash": orphan_hash,
+                "height": orphan_data.get("height", 0),
+                "parent": orphan_data.get("previous_hash", ""),
+                "age_seconds": age
+            })
+        
+        # Sort by height (ascending) for better readability
+        orphans.sort(key=lambda x: x["height"])
+        
+        return {
+            "count": len(self.orphan_blocks),
+            "max_orphans": self.MAX_ORPHAN_BLOCKS,
+            "max_age_seconds": self.MAX_ORPHAN_AGE,
+            "orphans": orphans
+        }
